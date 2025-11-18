@@ -67,7 +67,7 @@ All primary settings live in `config.jsonc` (JSON5 syntax). Environment variable
 | `VIP_TEMP_ROLE_ID`, `VIP_CLAIM_CHANNEL_ID` | Optional | Used by `/assignvip`. `VIP_TEMP_ROLE_ID` is a temporary Discord role that grants access to your VIP claim channel. `VIP_CLAIM_CHANNEL_ID` is the channel ID where the control panel lives (falls back to `CHANNEL_ID` if unset). |
 | `VIP_ASSIGN_LIMIT` | Optional | Weekly per-moderator cap for `/assignvip`. Defaults to `5` uses and resets every Monday at 01:00 in `LOCAL_TIMEZONE`. |
 | `COMMAND_GUILD_IDS` / `COMMAND_GUILD_ID` | Optional | Comma-separated guild IDs (or a single ID) to sync slash commands instantly to those servers. If unset, commands are synced globally (may take up to ~1 hour to propagate). |
-| `CRCON_HTTP_BASE_URL` | Yes | CRCON host (omit `/api`; the bot appends it automatically). |
+| `CRCON_HTTP_BASE_URL` | Yes | CRCON host (omit `/api`; comma-separated or an array to target multiple hosts). |
 | `CRCON_HTTP_BEARER_TOKEN` | Yes\* | Pre-generated CRCON token. Required unless you supply username/password. |
 | `CRCON_HTTP_USERNAME`, `CRCON_HTTP_PASSWORD` | Conditional | CRCON login credentials. Provide both instead of a bearer token if you want automatic logins and token refreshes. |
 | `CRCON_HTTP_VERIFY` | Optional | `true` by default. Set to `false` when using self-signed certificates. |
@@ -96,6 +96,23 @@ The bot validates required settings on startup and exits with a clear error when
   ANNOUNCEMENT_MESSAGE_ID: null
 }
 ```
+
+### Dual CRCON hosts (fan-out)
+
+- To post VIP grants to two CRCON servers in one action, set `CRCON_HTTP_BASE_URL` to multiple hosts (comma-separated in `.env` or an array in `config.jsonc`).
+- The bot reads player profiles from every reachable host, uses the latest existing VIP expiration across them, and then calls `add_vip` on all hosts with that unified expiration.
+- Partial failures are reported per host; successful hosts still complete the grant so players get access even if one endpoint is down.
+- `/show_player_vip` also aggregates across hosts: it shows the latest expiration it can find and per-host status lines.
+
+Examples:
+- `.env` style: `CRCON_HTTP_BASE_URL=https://anzrau.hlladmin.com,https://anzrus.hlladmin.com`
+- `config.jsonc` style:
+  ```json5
+  CRCON_HTTP_BASE_URL: [
+    "https://anzrau.hlladmin.com",
+    "https://anzrus.hlladmin.com",
+  ],
+  ```
 
 ## Bot Experience
 

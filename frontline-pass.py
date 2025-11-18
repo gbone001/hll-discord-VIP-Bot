@@ -5,7 +5,7 @@ import contextlib
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -193,6 +193,45 @@ def _parse_bool_env(name: str, raw: Optional[str], errors: List[str]) -> Optiona
     return None
 
 
+def _normalize_base_urls(raw: Any, errors: List[str]) -> List[str]:
+    base_urls: List[str] = []
+
+    def _append_from_string(value: str) -> None:
+        for part in value.split(","):
+            normalized = part.strip()
+            if normalized:
+                base_urls.append(normalized)
+
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        _append_from_string(raw)
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, str):
+                _append_from_string(item)
+            else:
+                errors.append("CRCON_HTTP_BASE_URL entries must be strings when using an array.")
+    else:
+        errors.append("CRCON_HTTP_BASE_URL must be a string or array of strings.")
+        return []
+
+    seen: set[str] = set()
+    normalized: List[str] = []
+    for base in base_urls:
+        trimmed = base.rstrip("/")
+        lowered_base = trimmed.lower()
+        if lowered_base.endswith("/api") or "/api/" in lowered_base:
+            errors.append(
+                "CRCON_HTTP_BASE_URL should not include '/api'. Provide the host only (e.g. https://example.com:8010)."
+            )
+            continue
+        if trimmed and trimmed not in seen:
+            normalized.append(trimmed)
+            seen.add(trimmed)
+    return normalized
+
+
 def _load_raw_config() -> Tuple[Dict[str, Any], Optional[Path]]:
     candidate_paths: List[Path] = []
     env_path = os.getenv("FRONTLINE_CONFIG_PATH") or os.getenv("CRCON_CONFIG_PATH")
@@ -239,7 +278,7 @@ class AppConfig:
     timezone: pytz.BaseTzInfo
     timezone_name: str
     announcement_message_id: Optional[int] = None
-    http_credentials: Optional[HttpCredentials] = None
+    http_credentials_list: List[HttpCredentials] = field(default_factory=list)
     moderator_role_id: Optional[int] = None
     vip_temp_role_id: Optional[int] = None
     vip_claim_channel_id: Optional[int] = None
@@ -248,6 +287,11 @@ class AppConfig:
     @property
     def vip_duration_label(self) -> str:
         return f"{self.vip_duration_hours:g}"
+
+    @property
+    def http_credentials(self) -> Optional[HttpCredentials]:
+        """Backward-compatible access to the first HTTP credential entry."""
+        return self.http_credentials_list[0] if self.http_credentials_list else None
 
 
 @dataclass(frozen=True)
@@ -500,39 +544,36 @@ def load_config() -> AppConfig:
     http_verify = optional_bool("CRCON_HTTP_VERIFY", default=True)
     http_timeout = optional_float("CRCON_HTTP_TIMEOUT", default=20.0) or 20.0
 
-    http_credentials: Optional[HttpCredentials] = None
-    trimmed_base = str(http_base_url_raw).strip() if http_base_url_raw else ""
+    http_credentials_list: List[HttpCredentials] = []
+    base_urls = _normalize_base_urls(http_base_url_raw, errors)
     trimmed_token = str(http_bearer_token).strip() if http_bearer_token else ""
     trimmed_username = str(http_username).strip() if http_username else ""
     trimmed_password = str(http_password).strip() if http_password else ""
 
-    if any((trimmed_base, trimmed_token, trimmed_username, trimmed_password)):
-        normalized_base = trimmed_base.rstrip("/")
-        if not normalized_base:
+    enable_http = bool(base_urls or trimmed_token or trimmed_username or trimmed_password)
+    if enable_http:
+        if not base_urls:
             errors.append("CRCON_HTTP_BASE_URL is required when using the HTTP API integration")
-        else:
-            lowered_base = normalized_base.lower()
-            if lowered_base.endswith("/api") or "/api/" in lowered_base:
-                errors.append(
-                    "CRCON_HTTP_BASE_URL should not include '/api'. Provide the host only (e.g. https://example.com:8010)."
-                )
         if not trimmed_token and not (trimmed_username and trimmed_password):
             errors.append(
                 "Provide either CRCON_HTTP_BEARER_TOKEN or both CRCON_HTTP_USERNAME and CRCON_HTTP_PASSWORD when enabling the HTTP API integration"
             )
         if trimmed_username and not trimmed_password:
             errors.append("CRCON_HTTP_PASSWORD is required when CRCON_HTTP_USERNAME is provided")
-        if normalized_base and (trimmed_token or (trimmed_username and trimmed_password)):
-            http_credentials = HttpCredentials(
-                base_url=normalized_base,
-                bearer_token=trimmed_token or None,
-                username=trimmed_username or None,
-                password=trimmed_password or None,
-                verify=http_verify if http_verify is not None else True,
-                timeout=http_timeout,
-            )
+        if base_urls and (trimmed_token or (trimmed_username and trimmed_password)):
+            http_credentials_list = [
+                HttpCredentials(
+                    base_url=base_url,
+                    bearer_token=trimmed_token or None,
+                    username=trimmed_username or None,
+                    password=trimmed_password or None,
+                    verify=http_verify if http_verify is not None else True,
+                    timeout=http_timeout,
+                )
+                for base_url in base_urls
+            ]
 
-    if http_credentials is None:
+    if not http_credentials_list:
         errors.append("CRCON_HTTP_BASE_URL and authentication details are required to grant VIP via HTTP API")
 
     if errors:
@@ -547,7 +588,7 @@ def load_config() -> AppConfig:
         timezone=timezone,
         timezone_name=timezone_name,
         announcement_message_id=announcement_message_id,
-        http_credentials=http_credentials,
+        http_credentials_list=http_credentials_list,
         moderator_role_id=moderator_role_id,
         vip_temp_role_id=vip_temp_role_id,
         vip_claim_channel_id=vip_claim_channel_id,
@@ -802,6 +843,7 @@ class VipGrantResult:
 class PlayerVipStatus:
     player_id: str
     expiration_utc: Optional[datetime]
+    status_lines: List[str] = field(default_factory=list)
 
     def is_active(self, reference: datetime) -> bool:
         return bool(self.expiration_utc and self.expiration_utc > reference)
@@ -809,9 +851,9 @@ class PlayerVipStatus:
 
 class VipService:
     def __init__(self, config: AppConfig) -> None:
-        if not config.http_credentials:
+        if not config.http_credentials_list:
             raise RuntimeError("HTTP credentials are required for VIP service.")
-        self._http_client = VipHttpClient(config.http_credentials)
+        self._clients = [VipHttpClient(creds) for creds in config.http_credentials_list]
 
     def grant_vip(
         self,
@@ -822,50 +864,115 @@ class VipService:
         *,
         player_name: Optional[str] = None,
     ) -> VipGrantResult:
-        expiration_utc = self._determine_extended_expiration(player_id, duration_hours)
+        expirations, status_lines, _ = self._collect_current_expirations(player_id)
+        expiration_utc = self._determine_extended_expiration(duration_hours, expirations)
         expiration_local = expiration_utc.astimezone(local_timezone)
         expiration_iso = expiration_utc.isoformat()
         comment = (
             f"Discord VIP for {requester_display_name} until {expiration_utc:%Y-%m-%d %H:%M:%S} UTC"
         )
-        response = self._http_client.add_vip(
+        detail = self._fan_out_add_vip(
             player_id,
             comment,
             expiration_iso,
+            status_lines,
             player_name=player_name,
         )
-        message: Any = response.get("result")
-        if isinstance(message, dict):
-            message = message.get("result") or message
-        if message is None:
-            message = "HTTP API add_vip succeeded."
-        detail = str(message)
         return VipGrantResult(
-            status_lines=[f"HTTP API: {detail}"],
+            status_lines=status_lines,
             detail=detail,
             expiration_local=expiration_local,
             expiration_utc=expiration_utc,
         )
 
     def get_player_vip_status(self, player_id: str) -> PlayerVipStatus:
-        profile = self._http_client.get_player_profile(player_id, num_sessions=10)
-        expiration_utc = self._extract_latest_vip_expiration(profile)
-        return PlayerVipStatus(player_id=player_id, expiration_utc=expiration_utc)
+        expirations, status_lines, fetched_any = self._collect_current_expirations(player_id)
+        if not fetched_any:
+            raise VipHTTPError("Unable to fetch player profile from any CRCON host.")
+        expiration_utc = self._latest_expiration_from_list(expirations)
+        return PlayerVipStatus(
+            player_id=player_id,
+            expiration_utc=expiration_utc,
+            status_lines=status_lines,
+        )
 
     def _determine_extended_expiration(
         self,
-        player_id: str,
         duration_hours: float,
+        expirations: List[datetime],
     ) -> datetime:
-        profile = self._http_client.get_player_profile(player_id, num_sessions=10)
-        latest_expiration = self._extract_latest_vip_expiration(profile)
         base = self._now_utc()
+        latest_expiration = self._latest_expiration_from_list(expirations)
         if latest_expiration and latest_expiration > base:
             base = latest_expiration
         return base + timedelta(hours=duration_hours)
 
     def _now_utc(self) -> datetime:
         return datetime.now(timezone.utc)
+
+    def _fan_out_add_vip(
+        self,
+        player_id: str,
+        comment: str,
+        expiration_iso: str,
+        status_lines: List[str],
+        *,
+        player_name: Optional[str] = None,
+    ) -> str:
+        detail_messages: List[str] = []
+        success_any = False
+        for client in self._clients:
+            base_label = self._host_label(client)
+            try:
+                response = client.add_vip(
+                    player_id,
+                    comment,
+                    expiration_iso,
+                    player_name=player_name,
+                )
+                message: Any = response.get("result")
+                if isinstance(message, dict):
+                    message = message.get("result") or message
+                if message is None:
+                    message = "add_vip succeeded."
+                success_any = True
+                message_str = str(message)
+                status_lines.append(f"{base_label}: {message_str}")
+                detail_messages.append(f"{base_label}: {message_str}")
+            except VipHTTPError as exc:
+                status_lines.append(f"{base_label}: failed to add VIP ({exc})")
+                continue
+        if not success_any:
+            raise VipHTTPError("Failed to grant VIP on any configured CRCON host.")
+        return "; ".join(detail_messages) if detail_messages else "VIP grant completed with warnings."
+
+    def _collect_current_expirations(
+        self,
+        player_id: str,
+    ) -> Tuple[List[datetime], List[str], bool]:
+        expirations: List[datetime] = []
+        status_lines: List[str] = []
+        fetched_any = False
+        for client in self._clients:
+            base_label = self._host_label(client)
+            try:
+                profile = client.get_player_profile(player_id, num_sessions=10)
+                fetched_any = True
+                expiration = self._extract_latest_vip_expiration(profile)
+                if expiration:
+                    expirations.append(expiration)
+                    status_lines.append(
+                        f"{base_label}: profile ok (latest VIP {expiration.strftime('%Y-%m-%d %H:%M:%S')} UTC)"
+                    )
+                else:
+                    status_lines.append(f"{base_label}: profile ok (no VIP records)")
+            except VipHTTPError as exc:
+                status_lines.append(f"{base_label}: profile lookup failed ({exc})")
+        return expirations, status_lines, fetched_any
+
+    def _host_label(self, client: VipHttpClient) -> str:
+        base_url = getattr(getattr(client, "credentials", None), "base_url", None)
+        return str(base_url) if base_url else "CRCON host"
 
     @staticmethod
     def _extract_latest_vip_expiration(profile: Dict[str, Any]) -> Optional[datetime]:
@@ -884,6 +991,12 @@ class VipService:
             if latest is None or expiration_utc > latest:
                 latest = expiration_utc
         return latest
+
+    @staticmethod
+    def _latest_expiration_from_list(expirations: List[datetime]) -> Optional[datetime]:
+        if not expirations:
+            return None
+        return max(expirations)
 
     @staticmethod
     def _parse_iso_datetime(value: Any) -> Optional[datetime]:
@@ -1126,8 +1239,11 @@ class FrontlinePassBot(commands.Bot):
 
     async def on_ready(self) -> None:
         logging.info("Bot is ready: %s", self.user)
-        http_base = self.config.http_credentials.base_url if self.config.http_credentials else "unset"
-        logging.info("HTTP API base=%s; current VIP duration=%.2f hours", http_base, self.vip_duration_hours)
+        if self.config.http_credentials_list:
+            http_base = ", ".join(creds.base_url for creds in self.config.http_credentials_list)
+        else:
+            http_base = "unset"
+        logging.info("HTTP API base(s)=%s; current VIP duration=%.2f hours", http_base, self.vip_duration_hours)
         await self.refresh_announcement_message()
 
     async def refresh_announcement_message(self) -> None:
@@ -1313,6 +1429,10 @@ class FrontlinePassBot(commands.Bot):
             else:
                 body = f"No VIP records found for {player_id}."
 
+            if status.status_lines:
+                status_summary = "\n".join(f"- {line}" for line in status.status_lines)
+                body = body + "\n\nPer-host status:\n" + status_summary
+
             followup_message = await interaction.followup.send(
                 body,
                 ephemeral=True,
@@ -1377,11 +1497,14 @@ class FrontlinePassBot(commands.Bot):
                 last_grant_text = local_dt.strftime("%Y-%m-%d %H:%M:%S %Z")
             else:
                 last_grant_text = "None yet"
-            http_base = self.config.http_credentials.base_url if self.config.http_credentials else "unset"
+            if self.config.http_credentials_list:
+                http_base = ", ".join(creds.base_url for creds in self.config.http_credentials_list)
+            else:
+                http_base = "unset"
             msg = (
                 f"VIP duration: {self.vip_duration_hours:g} hours\n"
                 f"Last VIP grant: {last_grant_text}\n"
-                f"HTTP API base: {http_base}"
+                f"HTTP API base(s): {http_base}"
             )
             await interaction.response.send_message(msg, ephemeral=True)
             schedule_ephemeral_cleanup(interaction)

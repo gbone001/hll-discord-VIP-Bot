@@ -9,7 +9,12 @@
   VIP_DURATION_HOURS: 72,
   VIP_ASSIGN_LIMIT: 5,
   LOCAL_TIMEZONE: "Australia/Sydney",
-  CRCON_HTTP_BASE_URL: "https://crcon.example.com",
+  // Single host: "https://crcon.example.com"
+  // Multi-host fan-out (one grant hits both hosts):
+  CRCON_HTTP_BASE_URL: [
+    "https://crcon.example.com",
+    "https://crcon-backup.example.com",
+  ],
   CRCON_HTTP_BEARER_TOKEN: "",
   CRCON_HTTP_USERNAME: "",
   CRCON_HTTP_PASSWORD: "",
