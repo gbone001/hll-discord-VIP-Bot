@@ -271,6 +271,32 @@ class VipServiceTests(unittest.TestCase):
         _, kwargs = fake_http_client.add_vip.call_args
         self.assertEqual(kwargs.get("player_name"), "GBONE001")
 
+    def test_grant_fixed_vip_does_not_fetch_or_extend_existing_expiration(self) -> None:
+        service = VipService(self.config)
+        fake_http_client = mock.Mock()
+        fake_http_client.add_vip.return_value = {"result": "ok"}
+        service._http_client = fake_http_client  # type: ignore[attr-defined]
+        fixed_now = datetime(2030, 1, 1, 12, 0, tzinfo=timezone.utc)
+        service._now_utc = mock.Mock(return_value=fixed_now)  # type: ignore[attr-defined]
+
+        result = service.grant_fixed_vip(
+            "steam123",
+            duration_minutes=10,
+            local_timezone=pytz.UTC,
+            requester_display_name="GBONE",
+        )
+
+        fake_http_client.get_player_profile.assert_not_called()
+        fake_http_client.add_vip.assert_called_once()
+        args, kwargs = fake_http_client.add_vip.call_args
+        expected_expiration = fixed_now + timedelta(minutes=10)
+        self.assertEqual(args[0], "steam123")
+        self.assertIn("Quick VIP from Discord by GBONE", args[1])
+        self.assertEqual(args[2], expected_expiration.isoformat())
+        self.assertIsNone(kwargs.get("player_name"))
+        self.assertEqual(result.expiration_utc, expected_expiration)
+        self.assertEqual(result.expiration_local, expected_expiration)
+
     def test_grant_vip_extends_existing_expiration(self) -> None:
         service = VipService(self.config)
         fake_http_client = mock.Mock()

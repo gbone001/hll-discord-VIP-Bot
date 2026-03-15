@@ -28,6 +28,8 @@ from dotenv import load_dotenv
 logging.basicConfig(level=logging.INFO)
 
 ANNOUNCEMENT_TITLE = "VIP Control Center"
+QUICK_VIP_ANNOUNCEMENT_TITLE = "Quick VIP Control Center"
+QUICK_VIP_DURATION_MINUTES = 10
 PLAYER_ID_PLACEHOLDER = (
     "Go to https://hllrecords.com/, get your player_id (e.g. 2805d5bbe14b6ec432f82e5cb859d012)."
 )
@@ -71,17 +73,47 @@ def build_announcement_embed(
     return embed
 
 
+def build_quick_vip_announcement_embed(
+    config: AppConfig,
+    _last_grant_at: Optional[datetime],
+) -> discord.Embed:
+    description_lines = [
+        "Use the button below to grant a fixed 10-minute VIP window.",
+        "Paste the target player's player_id from https://hllrecords.com when prompted.",
+        "This does not extend existing VIP. It sets the target to 10 minutes from now.",
+    ]
+    embed = discord.Embed(
+        title=QUICK_VIP_ANNOUNCEMENT_TITLE,
+        description="\n".join(description_lines),
+        color=0x5865F2,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Duration", value=f"{QUICK_VIP_DURATION_MINUTES} minutes", inline=True)
+    embed.add_field(name="Local Timezone", value=config.timezone_name, inline=True)
+    embed.set_footer(text="Channel access controls who can use Quick VIP.")
+    return embed
+
+
 class AnnouncementManager:
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        channel_id: int,
+        announcement_message_id: Optional[int],
+        title: str,
+    ) -> None:
         self._config = config
+        self._channel_id = channel_id
+        self._announcement_message_id = announcement_message_id
+        self._title = title
         self._message_id: Optional[int] = None
 
     async def ensure(
         self,
         bot: commands.Bot,
         view: View,
-        vip_duration_hours: float,
-        last_grant_at: Optional[datetime],
+        embed: discord.Embed,
         *,
         force_new: bool = False,
     ) -> Optional[discord.Message]:
@@ -95,7 +127,6 @@ class AnnouncementManager:
         else:
             message = await self._locate_message(destination, bot)
 
-        embed = build_announcement_embed(self._config, vip_duration_hours, last_grant_at)
         if message:
             await message.edit(embed=embed, view=view)
             self._message_id = message.id
@@ -111,16 +142,16 @@ class AnnouncementManager:
         return sent_message
 
     async def _resolve_destination(self, bot: commands.Bot) -> Optional[MessageableChannel]:
-        destination = bot.get_channel(self._config.channel_id)
+        destination = bot.get_channel(self._channel_id)
         if destination is None:
             try:
-                destination = await bot.fetch_channel(self._config.channel_id)
+                destination = await bot.fetch_channel(self._channel_id)
             except discord.DiscordException:
-                logging.exception("Failed to access channel with id %s", self._config.channel_id)
+                logging.exception("Failed to access channel with id %s", self._channel_id)
                 return None
 
         if not isinstance(destination, (discord.TextChannel, discord.Thread, discord.DMChannel)):
-            logging.error("Channel %s is not a text-based destination.", self._config.channel_id)
+            logging.error("Channel %s is not a text-based destination.", self._channel_id)
             return None
 
         return destination
@@ -141,7 +172,7 @@ class AnnouncementManager:
 
         async for message in destination.history(limit=50):
             if message.author == bot.user and message.embeds:
-                if message.embeds[0].title == ANNOUNCEMENT_TITLE:
+                if message.embeds[0].title == self._title:
                     self._message_id = message.id
                     return message
         return None
@@ -159,7 +190,7 @@ class AnnouncementManager:
 
         async for message in destination.history(limit=50):
             if message.author == bot.user and message.embeds:
-                if message.embeds[0].title == ANNOUNCEMENT_TITLE:
+                if message.embeds[0].title == self._title:
                     await self._delete_message(message)
 
         self._message_id = None
@@ -174,8 +205,8 @@ class AnnouncementManager:
         candidate_ids: List[int] = []
         if self._message_id:
             candidate_ids.append(self._message_id)
-        if self._config.announcement_message_id:
-            candidate_ids.append(self._config.announcement_message_id)
+        if self._announcement_message_id:
+            candidate_ids.append(self._announcement_message_id)
         return candidate_ids
 
 
@@ -239,6 +270,8 @@ class AppConfig:
     timezone: pytz.BaseTzInfo
     timezone_name: str
     announcement_message_id: Optional[int] = None
+    quick_vip_channel_id: Optional[int] = None
+    quick_vip_announcement_message_id: Optional[int] = None
     http_credentials: Optional[HttpCredentials] = None
     moderator_role_id: Optional[int] = None
     vip_temp_role_id: Optional[int] = None
@@ -482,6 +515,8 @@ def load_config() -> AppConfig:
         timezone = pytz.UTC
 
     announcement_message_id = optional_int("ANNOUNCEMENT_MESSAGE_ID")
+    quick_vip_channel_id = optional_int("QUICK_VIP_CHANNEL_ID")
+    quick_vip_announcement_message_id = optional_int("QUICK_VIP_ANNOUNCEMENT_MESSAGE_ID")
     moderator_role_id = optional_int("MODERATOR_ROLE_ID")
     vip_temp_role_id = optional_int("VIP_TEMP_ROLE_ID")
     vip_claim_channel_id = optional_int("VIP_CLAIM_CHANNEL_ID")
@@ -547,6 +582,8 @@ def load_config() -> AppConfig:
         timezone=timezone,
         timezone_name=timezone_name,
         announcement_message_id=announcement_message_id,
+        quick_vip_channel_id=quick_vip_channel_id,
+        quick_vip_announcement_message_id=quick_vip_announcement_message_id,
         http_credentials=http_credentials,
         moderator_role_id=moderator_role_id,
         vip_temp_role_id=vip_temp_role_id,
@@ -847,6 +884,40 @@ class VipService:
             expiration_utc=expiration_utc,
         )
 
+    def grant_fixed_vip(
+        self,
+        player_id: str,
+        duration_minutes: float,
+        local_timezone: pytz.BaseTzInfo,
+        requester_display_name: str,
+        *,
+        player_name: Optional[str] = None,
+    ) -> VipGrantResult:
+        expiration_utc = self._now_utc() + timedelta(minutes=duration_minutes)
+        expiration_local = expiration_utc.astimezone(local_timezone)
+        expiration_iso = expiration_utc.isoformat()
+        comment = (
+            f"Quick VIP from Discord by {requester_display_name} until {expiration_utc:%Y-%m-%d %H:%M:%S} UTC"
+        )
+        response = self._http_client.add_vip(
+            player_id,
+            comment,
+            expiration_iso,
+            player_name=player_name,
+        )
+        message: Any = response.get("result")
+        if isinstance(message, dict):
+            message = message.get("result") or message
+        if message is None:
+            message = "HTTP API add_vip succeeded."
+        detail = str(message)
+        return VipGrantResult(
+            status_lines=[f"HTTP API: {detail}"],
+            detail=detail,
+            expiration_local=expiration_local,
+            expiration_utc=expiration_utc,
+        )
+
     def get_player_vip_status(self, player_id: str) -> PlayerVipStatus:
         profile = self._http_client.get_player_profile(player_id, num_sessions=10)
         expiration_utc = self._extract_latest_vip_expiration(profile)
@@ -1066,14 +1137,145 @@ class CombinedView(PersistentView):
                 logging.exception("Failed to remove temporary VIP role %s from %s", role_id, user.id)
 
 
+class QuickVipRequestModal(Modal):
+    def __init__(self, parent_view: "QuickVipView") -> None:
+        super().__init__(title="Grant Quick VIP", custom_id="frontline-pass-quick-vip-modal")
+        self._parent_view = parent_view
+        self.player_id = TextInput(
+            label="Target T17 / Steam ID",
+            placeholder=PLAYER_ID_PLACEHOLDER,
+            custom_id="frontline-pass-quick-vip-player-id-input",
+            min_length=32,
+            max_length=32,
+            style=discord.TextStyle.short,
+        )
+        self.add_item(self.player_id)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self._parent_view.handle_modal_submission(interaction, self.player_id.value)
+
+
+class QuickVipView(PersistentView):
+    def __init__(
+        self,
+        bot: "FrontlinePassBot",
+        config: AppConfig,
+        vip_service: VipService,
+    ) -> None:
+        super().__init__()
+        self.bot = bot
+        self.config = config
+        self.vip_service = vip_service
+
+    @discord.ui.button(
+        label="Quick VIP (10 min)",
+        style=ButtonStyle.blurple,
+        custom_id="frontline-pass-quick-vip",
+    )
+    async def quick_vip_button(self, interaction: discord.Interaction, _: Button) -> None:
+        modal = QuickVipRequestModal(self)
+        try:
+            await interaction.response.send_modal(modal)
+        except discord.HTTPException:
+            logging.exception("Failed to open Quick VIP request modal for %s", interaction.user.id)
+            error_message = "I couldn't open the Quick VIP form. Please try again shortly."
+            if interaction.response.is_done():
+                followup = await interaction.followup.send(error_message, ephemeral=True, wait=True)
+                schedule_ephemeral_cleanup(interaction, message=followup)
+            else:
+                await interaction.response.send_message(error_message, ephemeral=True)
+                schedule_ephemeral_cleanup(interaction)
+
+    async def handle_modal_submission(self, interaction: discord.Interaction, player_id: str) -> None:
+        player_id = player_id.strip()
+        if not player_id:
+            await interaction.response.send_message("Player-ID cannot be empty.", ephemeral=True)
+            schedule_ephemeral_cleanup(interaction)
+            return
+
+        if len(player_id) != 32:
+            await interaction.response.send_message(
+                "Player-ID must be a 32-character string copied from https://hllrecords.com.",
+                ephemeral=True,
+            )
+            schedule_ephemeral_cleanup(interaction)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            result = await asyncio.to_thread(
+                self.vip_service.grant_fixed_vip,
+                player_id,
+                QUICK_VIP_DURATION_MINUTES,
+                self.config.timezone,
+                interaction.user.display_name,
+            )
+        except VipHTTPError as exc:
+            logging.exception("Failed to grant Quick VIP for player %s", player_id)
+            followup_message = await interaction.followup.send(
+                f"Error: Quick VIP could not be set: {exc}",
+                ephemeral=True,
+                wait=True,
+            )
+            schedule_ephemeral_cleanup(interaction, message=followup_message)
+            return
+        except Exception as exc:  # pragma: no cover
+            logging.exception("Unexpected error while granting Quick VIP for player %s: %s", player_id, exc)
+            followup_message = await interaction.followup.send(
+                "An unexpected error occurred while setting Quick VIP.",
+                ephemeral=True,
+                wait=True,
+            )
+            schedule_ephemeral_cleanup(interaction, message=followup_message)
+            return
+
+        readable_expiration = result.expiration_local.strftime("%Y-%m-%d %H:%M:%S %Z")
+        logging.info(
+            "Granted Quick VIP for player %s until %s UTC (%s)",
+            player_id,
+            result.expiration_utc.strftime("%Y-%m-%d %H:%M:%S"),
+            "; ".join(result.status_lines),
+        )
+        self.bot.record_vip_grant(datetime.now(timezone.utc))
+        await self.bot.refresh_quick_vip_announcement_message()
+
+        status_summary = "\n".join(f"- {line}" for line in result.status_lines)
+        message_body = (
+            f"Quick VIP granted for **{QUICK_VIP_DURATION_MINUTES} minutes**.\n"
+            f"Target ID: {player_id}\n"
+            f"Expiration: {readable_expiration}\n\n"
+            f"**Status**:\n{status_summary}"
+        )
+        followup_message = await interaction.followup.send(
+            message_body,
+            ephemeral=True,
+            wait=True,
+        )
+        schedule_ephemeral_cleanup(interaction, message=followup_message)
+
+
 class FrontlinePassBot(commands.Bot):
     def __init__(self, config: AppConfig, vip_service: VipService) -> None:
         intents = discord.Intents.default()
         super().__init__(command_prefix="!", intents=intents)
         self.config = config
         self.vip_service = vip_service
-        self.announcement_manager = AnnouncementManager(config)
+        self.announcement_manager = AnnouncementManager(
+            config,
+            channel_id=config.channel_id,
+            announcement_message_id=config.announcement_message_id,
+            title=ANNOUNCEMENT_TITLE,
+        )
+        self.quick_vip_announcement_manager: Optional[AnnouncementManager] = None
+        if config.quick_vip_channel_id:
+            self.quick_vip_announcement_manager = AnnouncementManager(
+                config,
+                channel_id=config.quick_vip_channel_id,
+                announcement_message_id=config.quick_vip_announcement_message_id,
+                title=QUICK_VIP_ANNOUNCEMENT_TITLE,
+            )
         self.persistent_view: Optional[CombinedView] = None
+        self.quick_vip_view: Optional[QuickVipView] = None
         self._vip_duration_hours = config.vip_duration_hours
         self._last_grant_utc: Optional[datetime] = None
         limiter_state_path = Path(__file__).resolve().with_name("vip_assign_usage.json")
@@ -1097,6 +1299,9 @@ class FrontlinePassBot(commands.Bot):
     async def setup_hook(self) -> None:
         self.persistent_view = CombinedView(self, self.config, self.vip_service)
         self.add_view(self.persistent_view)
+        if self.quick_vip_announcement_manager:
+            self.quick_vip_view = QuickVipView(self, self.config, self.vip_service)
+            self.add_view(self.quick_vip_view)
         await self._register_commands()
         guild_ids_raw = os.getenv("COMMAND_GUILD_IDS") or os.getenv("COMMAND_GUILD_ID")
         synced_any_guild = False
@@ -1129,6 +1334,7 @@ class FrontlinePassBot(commands.Bot):
         http_base = self.config.http_credentials.base_url if self.config.http_credentials else "unset"
         logging.info("HTTP API base=%s; current VIP duration=%.2f hours", http_base, self.vip_duration_hours)
         await self.refresh_announcement_message()
+        await self.refresh_quick_vip_announcement_message()
 
     async def refresh_announcement_message(self) -> None:
         if not self.persistent_view:
@@ -1137,8 +1343,16 @@ class FrontlinePassBot(commands.Bot):
         await self.announcement_manager.ensure(
             self,
             self.persistent_view,
-            self.vip_duration_hours,
-            self.last_grant_time,
+            build_announcement_embed(self.config, self.vip_duration_hours, self.last_grant_time),
+        )
+
+    async def refresh_quick_vip_announcement_message(self) -> None:
+        if not self.quick_vip_announcement_manager or not self.quick_vip_view:
+            return
+        await self.quick_vip_announcement_manager.ensure(
+            self,
+            self.quick_vip_view,
+            build_quick_vip_announcement_embed(self.config, self.last_grant_time),
         )
 
     def _user_has_moderator_privileges(self, user: discord.abc.User) -> bool:
@@ -1186,8 +1400,7 @@ class FrontlinePassBot(commands.Bot):
             message = await self.announcement_manager.ensure(
                 self,
                 self.persistent_view,
-                self.vip_duration_hours,
-                self.last_grant_time,
+                build_announcement_embed(self.config, self.vip_duration_hours, self.last_grant_time),
                 force_new=True,
             )
             if message:
@@ -1200,6 +1413,50 @@ class FrontlinePassBot(commands.Bot):
             else:
                 followup_message = await interaction.followup.send(
                     "Unable to repost the VIP controls. Check the bot logs for details.",
+                    ephemeral=True,
+                    wait=True,
+                )
+                schedule_ephemeral_cleanup(interaction, message=followup_message)
+
+        @self.tree.command(
+            name="repost_quick_vip_controls",
+            description="Repost the Quick VIP control panel.",
+        )
+        async def repost_quick_vip_controls(interaction: discord.Interaction) -> None:
+            permissions = getattr(interaction.user, "guild_permissions", None)  # type: ignore[attr-defined]
+            if not permissions or not permissions.administrator:
+                await interaction.response.send_message(
+                    "You need administrator permissions to use this command.",
+                    ephemeral=True,
+                )
+                schedule_ephemeral_cleanup(interaction)
+                return
+
+            if not self.quick_vip_announcement_manager or not self.quick_vip_view:
+                await interaction.response.send_message(
+                    "Quick VIP controls are not configured. Set QUICK_VIP_CHANNEL_ID first.",
+                    ephemeral=True,
+                )
+                schedule_ephemeral_cleanup(interaction)
+                return
+
+            await interaction.response.defer(ephemeral=True)
+            message = await self.quick_vip_announcement_manager.ensure(
+                self,
+                self.quick_vip_view,
+                build_quick_vip_announcement_embed(self.config, self.last_grant_time),
+                force_new=True,
+            )
+            if message:
+                followup_message = await interaction.followup.send(
+                    f"Quick VIP controls reposted successfully (message ID {message.id}).",
+                    ephemeral=True,
+                    wait=True,
+                )
+                schedule_ephemeral_cleanup(interaction, message=followup_message)
+            else:
+                followup_message = await interaction.followup.send(
+                    "Unable to repost the Quick VIP controls. Check the bot logs for details.",
                     ephemeral=True,
                     wait=True,
                 )

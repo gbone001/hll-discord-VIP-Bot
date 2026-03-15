@@ -5,6 +5,7 @@ Frontline Pass is a Discord bot that lets Hell Let Loose players enter their T17
 ## Highlights
 
 - **Self-service VIPs** - players press **Get VIP**, paste their Player-ID, and receive VIP without moderator intervention.
+- **Quick VIP panel** - users in a dedicated Discord channel can press **Quick VIP**, paste any player_id, and grant a fixed 10-minute VIP window.
 - **Moderator assist: /assignvip** - moderators can grant a temporary Discord role to a member so they can access the VIP channel to claim; the role is removed automatically after claiming.
 - **HTTP transport** - all VIP grants are issued through the CRCON HTTP API (bearer token preferred, login fallback optional).
 - **Always-on control panel** - the Discord message survives restarts and can be reposted via `/repost_frontline_controls`.
@@ -61,8 +62,10 @@ All primary settings live in `config.jsonc` (JSON5 syntax). Environment variable
 | `DISCORD_TOKEN` | Yes | Discord bot token. |
 | `VIP_DURATION_HOURS` | Yes | Duration of each VIP grant. |
 | `CHANNEL_ID` | Yes | Channel hosting the control panel buttons. |
+| `QUICK_VIP_CHANNEL_ID` | Optional | Separate channel hosting the persistent Quick VIP panel. Users with access to that channel can grant a fixed 10-minute VIP to any player ID they enter. |
 | `LOCAL_TIMEZONE` | Yes | Timezone for human-readable expiry timestamps (e.g. `Australia/Sydney`). |
 | `ANNOUNCEMENT_MESSAGE_ID` | Optional | Reuse an existing Discord message for the control panel. |
+| `QUICK_VIP_ANNOUNCEMENT_MESSAGE_ID` | Optional | Reuse an existing Discord message for the Quick VIP control panel. |
 | `MODERATOR_ROLE_ID` | Optional | Discord role ID treated as moderator for privileged commands such as `/assignvip` and `/set_vip_duration`. |
 | `VIP_TEMP_ROLE_ID`, `VIP_CLAIM_CHANNEL_ID` | Optional | Used by `/assignvip`. `VIP_TEMP_ROLE_ID` is a temporary Discord role that grants access to your VIP claim channel. `VIP_CLAIM_CHANNEL_ID` is the channel ID where the control panel lives (falls back to `CHANNEL_ID` if unset). |
 | `VIP_ASSIGN_LIMIT` | Optional | Weekly per-moderator cap for `/assignvip`. Defaults to `5` uses and resets every Monday at 01:00 in `LOCAL_TIMEZONE`. |
@@ -81,6 +84,7 @@ The bot validates required settings on startup and exits with a clear error when
 {
   DISCORD_TOKEN: "your-discord-token",
   CHANNEL_ID: 123456789012345678,
+  QUICK_VIP_CHANNEL_ID: 234567890123456789,
   VIP_DURATION_HOURS: 24,
   LOCAL_TIMEZONE: "Australia/Sydney",
 
@@ -93,7 +97,8 @@ The bot validates required settings on startup and exits with a clear error when
   CRCON_HTTP_TIMEOUT: 20,
 
   MODERATOR_ROLE_ID: null,
-  ANNOUNCEMENT_MESSAGE_ID: null
+  ANNOUNCEMENT_MESSAGE_ID: null,
+  QUICK_VIP_ANNOUNCEMENT_MESSAGE_ID: null
 }
 ```
 
@@ -102,6 +107,15 @@ The bot validates required settings on startup and exits with a clear error when
 1. **Get VIP** - clicking **Get VIP** opens a modal that collects the player's T17/Steam ID. Enter the string (for example `2805d5bbe14b6ec432f82e5cb859d012` from https://hllrecords.com) and the bot will call the CRCON HTTP API to grant VIP, then report the expiry time back to you. The ID is not persisted; users paste it each time they request access.
 
 Admins can refresh the message at any time with `/repost_frontline_controls`.
+
+### Quick VIP panel
+
+1. Users open the dedicated `QUICK_VIP_CHANNEL_ID` channel and press **Quick VIP (10 min)**.
+2. They paste the target player's `player_id` from [https://hllrecords.com](https://hllrecords.com).
+3. The bot grants a fixed 10-minute VIP window starting from the current time.
+4. This does not add 10 minutes to an existing VIP total; it sets the expiration to 10 minutes from the moment the button is used.
+
+Admins can refresh the Quick VIP panel at any time with `/repost_quick_vip_controls`.
 
 ### New: Moderator flow with `/assignvip`
 
