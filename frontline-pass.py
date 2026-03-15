@@ -30,6 +30,8 @@ logging.basicConfig(level=logging.INFO)
 ANNOUNCEMENT_TITLE = "VIP Control Center"
 QUICK_VIP_ANNOUNCEMENT_TITLE = "Quick VIP Control Center"
 QUICK_VIP_DURATION_MINUTES = 10
+QUICK_VIP_GIVER_ROLE_NAME = "Quick-VIP-Giver -"
+QUICK_VIP_GIVER_LIMIT_PER_24H = 5
 PLAYER_ID_PLACEHOLDER = (
     "Go to https://hllrecords.com/, get your player_id (e.g. 2805d5bbe14b6ec432f82e5cb859d012)."
 )
@@ -288,6 +290,133 @@ class VipAssignUsageResult:
     allowed: bool
     used: int
     limit: int
+
+
+@dataclass(frozen=True)
+class RollingWindowUsageResult:
+    allowed: bool
+    used: int
+    limit: int
+    next_available_at: Optional[datetime] = None
+
+
+class RollingWindowLimiter:
+    def __init__(self, *, window: timedelta, default_limit: int, storage_path: Path) -> None:
+        self._window = window
+        self._storage_path = storage_path
+        self._lock = asyncio.Lock()
+        self._state: Dict[str, Any] = {
+            "limit": max(int(default_limit), 1),
+            "usage": {},
+        }
+        self._load_state()
+
+    async def try_consume(self, user_id: int) -> RollingWindowUsageResult:
+        async with self._lock:
+            now = datetime.now(timezone.utc)
+            changed = self._prune(now)
+            limit = max(int(self._state.get("limit", 1)), 1)
+            usage_map = self._state.setdefault("usage", {})
+            key = str(user_id)
+            entries = usage_map.setdefault(key, [])
+            if not isinstance(entries, list):
+                entries = []
+                usage_map[key] = entries
+                changed = True
+
+            used = len(entries)
+            if used >= limit:
+                oldest = self._parse_datetime(entries[0]) if entries else None
+                next_available = oldest + self._window if oldest else None
+                if changed:
+                    self._save_state()
+                return RollingWindowUsageResult(False, used, limit, next_available)
+
+            entries.append(now.isoformat())
+            self._save_state()
+            return RollingWindowUsageResult(True, used + 1, limit)
+
+    def _load_state(self) -> None:
+        try:
+            with self._storage_path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except FileNotFoundError:
+            return
+        except Exception:
+            logging.exception("Failed to load rolling limiter state from %s", self._storage_path)
+            return
+
+        limit = data.get("limit")
+        if not isinstance(limit, int) or limit <= 0:
+            limit = self._state["limit"]
+        usage_raw = data.get("usage") or {}
+        usage: Dict[str, List[str]] = {}
+        if isinstance(usage_raw, dict):
+            for key, timestamps in usage_raw.items():
+                if not isinstance(timestamps, list):
+                    continue
+                cleaned: List[str] = []
+                for value in timestamps:
+                    if isinstance(value, str) and self._parse_datetime(value):
+                        cleaned.append(value)
+                if cleaned:
+                    usage[str(key)] = cleaned
+
+        self._state = {
+            "limit": limit,
+            "usage": usage,
+        }
+
+    def _save_state(self) -> None:
+        try:
+            self._storage_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._storage_path.open("w", encoding="utf-8") as handle:
+                json.dump(self._state, handle)
+        except Exception:
+            logging.exception("Failed to persist rolling limiter state to %s", self._storage_path)
+
+    def _prune(self, now: datetime) -> bool:
+        cutoff = now - self._window
+        usage_map = self._state.get("usage", {})
+        if not isinstance(usage_map, dict):
+            self._state["usage"] = {}
+            return True
+        changed = False
+        for key in list(usage_map.keys()):
+            timestamps = usage_map.get(key, [])
+            if not isinstance(timestamps, list):
+                usage_map.pop(key, None)
+                changed = True
+                continue
+            filtered: List[str] = []
+            for value in timestamps:
+                parsed = self._parse_datetime(value)
+                if not parsed:
+                    changed = True
+                    continue
+                if parsed > cutoff:
+                    filtered.append(value)
+                else:
+                    changed = True
+            if filtered:
+                if len(filtered) != len(timestamps):
+                    usage_map[key] = filtered
+            else:
+                usage_map.pop(key, None)
+                changed = True
+        return changed
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> Optional[datetime]:
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
 
 
 class VipAssignLimiter:
@@ -1201,6 +1330,26 @@ class QuickVipView(PersistentView):
             schedule_ephemeral_cleanup(interaction)
             return
 
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        if member is not None and self.bot.user_has_role_named(member, QUICK_VIP_GIVER_ROLE_NAME):
+            usage = await self.bot.quick_vip_giver_limiter.try_consume(member.id)
+            if not usage.allowed:
+                next_at = usage.next_available_at
+                if next_at is not None:
+                    next_at_unix = int(next_at.timestamp())
+                    message = (
+                        f"Quick VIP limit reached: {usage.limit} grants per 24 hours for "
+                        f"`{QUICK_VIP_GIVER_ROLE_NAME}`.\nTry again <t:{next_at_unix}:R>."
+                    )
+                else:
+                    message = (
+                        f"Quick VIP limit reached: {usage.limit} grants per 24 hours for "
+                        f"`{QUICK_VIP_GIVER_ROLE_NAME}`."
+                    )
+                await interaction.response.send_message(message, ephemeral=True)
+                schedule_ephemeral_cleanup(interaction)
+                return
+
         await interaction.response.defer(ephemeral=True)
         try:
             result = await asyncio.to_thread(
@@ -1284,6 +1433,12 @@ class FrontlinePassBot(commands.Bot):
             default_limit=config.vip_assign_limit,
             storage_path=limiter_state_path,
         )
+        quick_vip_limiter_path = Path(__file__).resolve().with_name("quick_vip_giver_usage.json")
+        self.quick_vip_giver_limiter = RollingWindowLimiter(
+            window=timedelta(hours=24),
+            default_limit=QUICK_VIP_GIVER_LIMIT_PER_24H,
+            storage_path=quick_vip_limiter_path,
+        )
 
     @property
     def vip_duration_hours(self) -> float:
@@ -1364,6 +1519,17 @@ class FrontlinePassBot(commands.Bot):
             for role in getattr(user, "roles", []):  # type: ignore[assignment]
                 if getattr(role, "id", None) == role_id:
                     return True
+        return False
+
+    @staticmethod
+    def user_has_role_named(user: discord.abc.User, role_name: str) -> bool:
+        if not hasattr(user, "roles"):
+            return False
+        target = role_name.strip().lower()
+        for role in getattr(user, "roles", []):
+            name = getattr(role, "name", "")
+            if isinstance(name, str) and name.strip().lower() == target:
+                return True
         return False
 
     async def set_vip_duration_hours(self, hours: float) -> None:

@@ -1,5 +1,7 @@
 import importlib.util
+import json
 import pathlib
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -20,6 +22,7 @@ HttpCredentials = frontline_pass.HttpCredentials
 VipHttpClient = frontline_pass.VipHttpClient
 VipHTTPError = frontline_pass.VipHTTPError
 VipService = frontline_pass.VipService
+RollingWindowLimiter = frontline_pass.RollingWindowLimiter
 
 
 class DummyResponse:
@@ -353,6 +356,51 @@ class VipServiceTests(unittest.TestCase):
 
         self.assertEqual(status.player_id, "steam123")
         self.assertIsNone(status.expiration_utc)
+
+
+class RollingWindowLimiterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_try_consume_blocks_after_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage_path = pathlib.Path(tmpdir) / "quick_limit.json"
+            limiter = RollingWindowLimiter(
+                window=timedelta(hours=24),
+                default_limit=2,
+                storage_path=storage_path,
+            )
+
+            first = await limiter.try_consume(42)
+            second = await limiter.try_consume(42)
+            blocked = await limiter.try_consume(42)
+
+            self.assertTrue(first.allowed)
+            self.assertTrue(second.allowed)
+            self.assertFalse(blocked.allowed)
+            self.assertEqual(blocked.used, 2)
+            self.assertEqual(blocked.limit, 2)
+            self.assertIsNotNone(blocked.next_available_at)
+
+    async def test_try_consume_prunes_old_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage_path = pathlib.Path(tmpdir) / "quick_limit.json"
+            old_time = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+            state = {
+                "limit": 1,
+                "usage": {
+                    "42": [old_time],
+                },
+            }
+            storage_path.write_text(json.dumps(state), encoding="utf-8")
+
+            limiter = RollingWindowLimiter(
+                window=timedelta(hours=24),
+                default_limit=1,
+                storage_path=storage_path,
+            )
+            result = await limiter.try_consume(42)
+
+            self.assertTrue(result.allowed)
+            self.assertEqual(result.used, 1)
+            self.assertEqual(result.limit, 1)
 
 
 if __name__ == "__main__":
