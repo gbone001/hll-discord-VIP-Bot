@@ -30,7 +30,13 @@ logging.basicConfig(level=logging.INFO)
 ANNOUNCEMENT_TITLE = "VIP Control Center"
 QUICK_VIP_ANNOUNCEMENT_TITLE = "Quick VIP Control Center"
 QUICK_VIP_DURATION_MINUTES = 10
-QUICK_VIP_GIVER_ROLE_NAME = "Quick-VIP-Giver -"
+QUICK_VIP_GIVER_ROLE_NAMES = {
+    "MSU-Quick-VIP-Giver",
+    "ROFS-Quick-VIP-Giver",
+    "SCH-Quick-VIP-Giver",
+    "6th-Quick-VIP-Giver",
+    "TFMC-Quick-VIP-Giver",
+}
 QUICK_VIP_GIVER_LIMIT_PER_24H = 5
 PLAYER_ID_PLACEHOLDER = (
     "Go to https://hllrecords.com/, get your player_id (e.g. 2805d5bbe14b6ec432f82e5cb859d012)."
@@ -1331,20 +1337,21 @@ class QuickVipView(PersistentView):
             return
 
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
-        if member is not None and self.bot.user_has_role_named(member, QUICK_VIP_GIVER_ROLE_NAME):
+        if member is not None and self.bot.user_has_any_role_named(member, QUICK_VIP_GIVER_ROLE_NAMES):
             usage = await self.bot.quick_vip_giver_limiter.try_consume(member.id)
             if not usage.allowed:
                 next_at = usage.next_available_at
                 if next_at is not None:
                     next_at_unix = int(next_at.timestamp())
                     message = (
-                        f"Quick VIP limit reached: {usage.limit} grants per 24 hours for "
-                        f"`{QUICK_VIP_GIVER_ROLE_NAME}`.\nTry again <t:{next_at_unix}:R>."
+                        f"Quick VIP limit reached: {usage.limit} grants per 24 hours for approved "
+                        "Quick VIP Giver roles.\n"
+                        f"Try again <t:{next_at_unix}:R>."
                     )
                 else:
                     message = (
-                        f"Quick VIP limit reached: {usage.limit} grants per 24 hours for "
-                        f"`{QUICK_VIP_GIVER_ROLE_NAME}`."
+                        f"Quick VIP limit reached: {usage.limit} grants per 24 hours for approved "
+                        "Quick VIP Giver roles."
                     )
                 await interaction.response.send_message(message, ephemeral=True)
                 schedule_ephemeral_cleanup(interaction)
@@ -1522,13 +1529,15 @@ class FrontlinePassBot(commands.Bot):
         return False
 
     @staticmethod
-    def user_has_role_named(user: discord.abc.User, role_name: str) -> bool:
+    def user_has_any_role_named(user: discord.abc.User, role_names: set[str]) -> bool:
         if not hasattr(user, "roles"):
             return False
-        target = role_name.strip().lower()
+        targets = {name.strip().lower() for name in role_names if isinstance(name, str)}
+        if not targets:
+            return False
         for role in getattr(user, "roles", []):
             name = getattr(role, "name", "")
-            if isinstance(name, str) and name.strip().lower() == target:
+            if isinstance(name, str) and name.strip().lower() in targets:
                 return True
         return False
 
