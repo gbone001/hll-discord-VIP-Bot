@@ -36,6 +36,7 @@ QUICK_VIP_GIVER_ROLE_NAMES = {
     "SCH-Quick-VIP-Giver",
     "6th-Quick-VIP-Giver",
     "TFMC-Quick-VIP-Giver",
+    "LGN-Quick-VIP-Giver",
 }
 QUICK_VIP_GIVER_LIMIT_PER_24H = 5
 PLAYER_ID_PLACEHOLDER = (
