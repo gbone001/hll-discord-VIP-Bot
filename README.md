@@ -7,7 +7,7 @@ Frontline Pass is a Discord bot that lets Hell Let Loose players enter their T17
 - **Self-service VIPs** - players press **Get VIP**, paste their Player-ID, and receive VIP without moderator intervention.
 - **Quick VIP panel** - users in a dedicated Discord channel can press **Quick VIP**, paste any player_id, and grant a fixed 10-minute VIP window.
 - **Moderator assist: /assignvip** - moderators can grant a temporary Discord role to a member so they can access the VIP channel to claim; the role is removed automatically after claiming.
-- **Team messaging: /server_message** - moderators can send in-game messages to Axis, Allies, or Both, and also update the server broadcast message in one command.
+- **Team messaging: /server_message** - moderators can send a custom in-game message to Axis, Allies, or Both and get delivery confirmation.
 - **HTTP transport** - all VIP grants are issued through the CRCON HTTP API (bearer token preferred, login fallback optional).
 - **Always-on control panel** - the Discord message survives restarts and can be reposted via `/repost_frontline_controls`.
 - **No local database** - no SQLite or JSON persistence; everything is handled through the modal and CRCON.
@@ -130,7 +130,7 @@ Admins can refresh the Quick VIP panel at any time with `/repost_quick_vip_contr
 
 Use `/show_player_vip` and paste the Player ID string that you can copy from [https://hllrecords.com](https://hllrecords.com). The bot calls the CRCON HTTP API and replies with the current VIP status and the expiration time rendered in your configured local timezone.
 
-### Send team + broadcast message
+### Send team message
 
 Use `/server_message` with:
 
@@ -141,14 +141,12 @@ The bot will:
 
 1. Query current players from CRCON.
 2. Send direct in-game messages to players matching the selected team scope.
-3. Set the server broadcast message with the same text.
-4. Reply with delivery stats (`attempted`, `sent`, `failed`) and the broadcast API result.
+3. Reply with delivery stats (`attempted`, `sent`, `failed`) so you can confirm it sent.
 
 Required CRCON API permissions for the bot account:
 
 - `api.can_view_get_players`
 - `api.can_message_players`
-- `api.can_change_broadcast_message`
 
 ## Deployment Notes
 

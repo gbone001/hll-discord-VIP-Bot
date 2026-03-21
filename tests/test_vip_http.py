@@ -263,7 +263,12 @@ class VipHttpClientTests(unittest.TestCase):
         )
 
     def test_set_broadcast_posts_message(self) -> None:
-        session = DummySession(DummyResponse(200, {"result": "ok"}))
+        session = DummySession(
+            [
+                DummyResponse(200, {"result": "previous-message"}),
+                DummyResponse(200, {"result": "Server notice"}),
+            ]
+        )
         client = VipHttpClient(
             HttpCredentials(base_url="https://example/api", bearer_token="abc123"),
             session=session,
@@ -271,9 +276,17 @@ class VipHttpClientTests(unittest.TestCase):
 
         result = client.set_broadcast("Server notice")
 
-        self.assertEqual(result, "ok")
+        self.assertEqual(
+            result,
+            {
+                "previous": "previous-message",
+                "current": "Server notice",
+            },
+        )
         self.assertEqual(session.calls[0]["url"], "https://example/api/set_broadcast")
         self.assertEqual(session.calls[0]["json"], {"message": "Server notice"})
+        self.assertEqual(session.calls[1]["method"], "GET")
+        self.assertEqual(session.calls[1]["url"], "https://example/api/get_broadcast_message")
 
 
 class VipServiceTests(unittest.TestCase):
@@ -421,7 +434,7 @@ class VipServiceTests(unittest.TestCase):
         self.assertEqual(status.player_id, "steam123")
         self.assertIsNone(status.expiration_utc)
 
-    def test_message_team_and_broadcast_axis(self) -> None:
+    def test_message_team_axis(self) -> None:
         service = VipService(self.config)
         fake_http_client = mock.Mock()
         fake_http_client.get_players.return_value = [
@@ -430,20 +443,18 @@ class VipServiceTests(unittest.TestCase):
             {"player_id": "l1", "team": "Allies", "player_name": "AllyOne"},
         ]
         fake_http_client.message_player.return_value = True
-        fake_http_client.set_broadcast.return_value = "broadcast-updated"
         service._http_client = fake_http_client  # type: ignore[attr-defined]
 
-        result = service.message_team_and_broadcast("axis", "Push now", "Moderator")
+        result = service.message_team("axis", "Push now", "Moderator")
 
         self.assertEqual(result.recipient, "axis")
         self.assertEqual(result.attempted, 2)
         self.assertEqual(result.sent, 2)
         self.assertEqual(result.failed, 0)
-        self.assertEqual(result.broadcast_detail, "broadcast-updated")
         self.assertEqual(fake_http_client.message_player.call_count, 2)
-        fake_http_client.set_broadcast.assert_called_once_with("Push now")
+        fake_http_client.set_broadcast.assert_not_called()
 
-    def test_message_team_and_broadcast_both_ignores_unknown_entries(self) -> None:
+    def test_message_team_both_ignores_unknown_entries(self) -> None:
         service = VipService(self.config)
         fake_http_client = mock.Mock()
         fake_http_client.get_players.return_value = [
@@ -453,21 +464,21 @@ class VipServiceTests(unittest.TestCase):
             "invalid",
         ]
         fake_http_client.message_player.return_value = True
-        fake_http_client.set_broadcast.return_value = "broadcast-updated"
         service._http_client = fake_http_client  # type: ignore[attr-defined]
 
-        result = service.message_team_and_broadcast("both", "All players", "Moderator")
+        result = service.message_team("both", "All players", "Moderator")
 
         self.assertEqual(result.attempted, 3)
         self.assertEqual(result.sent, 2)
         self.assertEqual(result.failed, 1)
         self.assertEqual(fake_http_client.message_player.call_count, 2)
+        fake_http_client.set_broadcast.assert_not_called()
 
-    def test_message_team_and_broadcast_rejects_invalid_recipient(self) -> None:
+    def test_message_team_rejects_invalid_recipient(self) -> None:
         service = VipService(self.config)
 
         with self.assertRaises(VipHTTPError):
-            service.message_team_and_broadcast("spectators", "Hello", "Moderator")
+            service.message_team("spectators", "Hello", "Moderator")
 
 
 class RollingWindowLimiterTests(unittest.IsolatedAsyncioTestCase):

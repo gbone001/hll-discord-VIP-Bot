@@ -1008,7 +1008,7 @@ class VipHttpClient:
         result = data.get("result")
         return bool(result)
 
-    def set_broadcast(self, message: str) -> str:
+    def set_broadcast(self, message: str) -> Dict[str, str]:
         payload = {"message": message}
         try:
             response = self._request_with_reauth("POST", "set_broadcast", json_payload=payload)
@@ -1022,10 +1022,27 @@ class VipHttpClient:
         if data.get("failed"):
             raise VipHTTPError(f"set_broadcast reported failure: {data.get('error') or data}")
 
-        result = data.get("result")
-        if result is None:
-            return "Broadcast sent."
-        return str(result)
+        previous = data.get("result")
+        previous_text = ""
+        if previous is not None:
+            previous_text = str(previous)
+
+        current_text = message
+        try:
+            current_response = self._request_with_reauth("GET", "get_broadcast_message")
+            if current_response.status_code == 200:
+                current_data = self._parse_json(current_response)
+                if not current_data.get("failed"):
+                    current_result = current_data.get("result")
+                    if isinstance(current_result, str) and current_result.strip():
+                        current_text = current_result.strip()
+        except (VipHTTPError, requests.exceptions.RequestException):
+            logging.warning("Unable to read current broadcast after set_broadcast.")
+
+        return {
+            "previous": previous_text,
+            "current": current_text,
+        }
 
     @staticmethod
     def _parse_json(response: requests.Response) -> Dict[str, Any]:
@@ -1052,7 +1069,6 @@ class TeamMessageDispatchResult:
     attempted: int
     sent: int
     failed: int
-    broadcast_detail: str
 
 
 @dataclass(frozen=True)
@@ -1143,7 +1159,7 @@ class VipService:
         expiration_utc = self._extract_latest_vip_expiration(profile)
         return PlayerVipStatus(player_id=player_id, expiration_utc=expiration_utc)
 
-    def message_team_and_broadcast(
+    def message_team(
         self,
         recipient: str,
         message: str,
@@ -1182,13 +1198,11 @@ class VipService:
             except VipHTTPError:
                 failed += 1
 
-        broadcast_detail = self._http_client.set_broadcast(text)
         return TeamMessageDispatchResult(
             recipient=recipient_key,
             attempted=attempted,
             sent=sent,
             failed=failed,
-            broadcast_detail=broadcast_detail,
         )
 
     def _determine_extended_expiration(
@@ -1941,7 +1955,7 @@ class FrontlinePassBot(commands.Bot):
 
         @self.tree.command(
             name="server_message",
-            description="Send a message to Axis, Allies, or Both, then set the server broadcast message.",
+            description="Send a custom message to Axis, Allies, or Both.",
         )
         @app_commands.describe(
             recipient="Who should receive the in-game direct message",
@@ -1979,7 +1993,7 @@ class FrontlinePassBot(commands.Bot):
             await interaction.response.defer(ephemeral=True)
             try:
                 result = await asyncio.to_thread(
-                    self.vip_service.message_team_and_broadcast,
+                    self.vip_service.message_team,
                     recipient.value,
                     cleaned_message,
                     interaction.user.display_name,
@@ -2007,8 +2021,7 @@ class FrontlinePassBot(commands.Bot):
                     f"Recipient: {result.recipient}\n"
                     f"Direct messages attempted: {result.attempted}\n"
                     f"Direct messages sent: {result.sent}\n"
-                    f"Direct message failures: {result.failed}\n"
-                    f"Broadcast result: {result.broadcast_detail}"
+                    f"Direct message failures: {result.failed}"
                 ),
                 ephemeral=True,
                 wait=True,
