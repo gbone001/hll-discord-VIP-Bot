@@ -7,7 +7,7 @@ Frontline Pass is a Discord bot that lets Hell Let Loose players enter their T17
 - **Self-service VIPs** - players press **Get VIP**, paste their Player-ID, and receive VIP without moderator intervention.
 - **Quick VIP panel** - users in a dedicated Discord channel can press **Quick VIP**, paste any player_id, and grant a fixed 10-minute VIP window.
 - **Moderator assist: /assignvip** - moderators can grant a temporary Discord role to a member so they can access the VIP channel to claim; the role is removed automatically after claiming.
-- **Team messaging: /server_message** - moderators can send a custom in-game message to Axis, Allies, or Both and get delivery confirmation.
+- **Team messaging: /game_server_message** - moderators can send a custom in-game message to Axis, Allies, or Both and get delivery confirmation.
 - **HTTP transport** - all VIP grants are issued through the CRCON HTTP API (bearer token preferred, login fallback optional).
 - **Always-on control panel** - the Discord message survives restarts and can be reposted via `/repost_frontline_controls`.
 - **No local database** - no SQLite or JSON persistence; everything is handled through the modal and CRCON.
@@ -67,7 +67,7 @@ All primary settings live in `config.jsonc` (JSON5 syntax). Environment variable
 | `LOCAL_TIMEZONE` | Yes | Timezone for human-readable expiry timestamps (e.g. `Australia/Sydney`). |
 | `ANNOUNCEMENT_MESSAGE_ID` | Optional | Reuse an existing Discord message for the control panel. |
 | `QUICK_VIP_ANNOUNCEMENT_MESSAGE_ID` | Optional | Reuse an existing Discord message for the Quick VIP control panel. |
-| `MODERATOR_ROLE_ID` | Optional | Discord role ID treated as moderator for privileged commands such as `/assignvip`, `/set_vip_duration`, and `/server_message`. |
+| `MODERATOR_ROLE_ID` | Optional | Discord role ID treated as moderator for privileged commands such as `/assignvip`, `/set_vip_duration`, and `/game_server_message`. |
 | `VIP_TEMP_ROLE_ID`, `VIP_CLAIM_CHANNEL_ID` | Optional | Used by `/assignvip`. `VIP_TEMP_ROLE_ID` is a temporary Discord role that grants access to your VIP claim channel. `VIP_CLAIM_CHANNEL_ID` is the channel ID where the control panel lives (falls back to `CHANNEL_ID` if unset). |
 | `VIP_ASSIGN_LIMIT` | Optional | Weekly per-moderator cap for `/assignvip`. Defaults to `5` uses and resets every Monday at 01:00 in `LOCAL_TIMEZONE`. |
 | `COMMAND_GUILD_IDS` / `COMMAND_GUILD_ID` | Optional | Comma-separated guild IDs (or a single ID) to sync slash commands instantly to those servers. If unset, commands are synced globally (may take up to ~1 hour to propagate). |
@@ -132,7 +132,7 @@ Use `/show_player_vip` and paste the Player ID string that you can copy from [ht
 
 ### Send team message
 
-Use `/server_message` with:
+Use `/game_server_message` with:
 
 1. `recipient`: `Axis`, `Allies`, or `Both`
 2. `message`: the text to deliver in-game

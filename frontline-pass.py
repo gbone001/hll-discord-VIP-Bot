@@ -1954,7 +1954,7 @@ class FrontlinePassBot(commands.Bot):
             schedule_ephemeral_cleanup(interaction, message=followup_message)
 
         @self.tree.command(
-            name="server_message",
+            name="game_server_message",
             description="Send a custom message to Axis, Allies, or Both.",
         )
         @app_commands.describe(
@@ -1968,7 +1968,7 @@ class FrontlinePassBot(commands.Bot):
                 app_commands.Choice(name="Both", value="both"),
             ]
         )
-        async def server_message(
+        async def game_server_message(
             interaction: discord.Interaction,
             recipient: app_commands.Choice[str],
             message: str,
@@ -1976,21 +1976,19 @@ class FrontlinePassBot(commands.Bot):
             if not self._user_has_moderator_privileges(interaction.user):
                 await interaction.response.send_message(
                     "You need moderator permissions to use this command.",
-                    ephemeral=True,
+                    ephemeral=False,
                 )
-                schedule_ephemeral_cleanup(interaction)
                 return
 
             cleaned_message = message.strip()
             if not cleaned_message:
                 await interaction.response.send_message(
                     "Message cannot be empty.",
-                    ephemeral=True,
+                    ephemeral=False,
                 )
-                schedule_ephemeral_cleanup(interaction)
                 return
 
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer(ephemeral=False)
             try:
                 result = await asyncio.to_thread(
                     self.vip_service.message_team,
@@ -1999,34 +1997,32 @@ class FrontlinePassBot(commands.Bot):
                     interaction.user.display_name,
                 )
             except VipHTTPError as exc:
-                followup_message = await interaction.followup.send(
+                await interaction.followup.send(
                     f"Unable to deliver message: {exc}",
-                    ephemeral=True,
+                    ephemeral=False,
                     wait=True,
                 )
-                schedule_ephemeral_cleanup(interaction, message=followup_message)
                 return
             except Exception as exc:
                 logging.exception("Unexpected error while sending server message: %s", exc)
-                followup_message = await interaction.followup.send(
+                await interaction.followup.send(
                     "Unexpected error while sending the in-game message.",
-                    ephemeral=True,
+                    ephemeral=False,
                     wait=True,
                 )
-                schedule_ephemeral_cleanup(interaction, message=followup_message)
                 return
 
-            followup_message = await interaction.followup.send(
+            await interaction.followup.send(
                 (
                     f"Recipient: {result.recipient}\n"
+                    f"Message: {cleaned_message}\n"
                     f"Direct messages attempted: {result.attempted}\n"
                     f"Direct messages sent: {result.sent}\n"
                     f"Direct message failures: {result.failed}"
                 ),
-                ephemeral=True,
+                ephemeral=False,
                 wait=True,
             )
-            schedule_ephemeral_cleanup(interaction, message=followup_message)
 
         @self.tree.command(
             name="vipassignlimit",
