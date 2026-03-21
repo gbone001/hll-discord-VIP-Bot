@@ -953,6 +953,80 @@ class VipHttpClient:
             raise VipHTTPError("get_player_profile returned an unexpected result format.")
         return result
 
+    def get_players(self) -> List[Dict[str, Any]]:
+        try:
+            response = self._request_with_reauth("GET", "get_players")
+        except requests.exceptions.RequestException as exc:
+            raise VipHTTPError(f"HTTP API request failed: {exc}") from exc
+
+        if response.status_code != 200:
+            raise VipHTTPError(f"get_players failed with status {response.status_code}: {response.text}")
+
+        data = self._parse_json(response)
+        if data.get("failed"):
+            raise VipHTTPError(f"get_players reported failure: {data.get('error') or data}")
+        result = data.get("result")
+        if result is None:
+            return []
+        if not isinstance(result, list):
+            raise VipHTTPError("get_players returned an unexpected result format.")
+        players: List[Dict[str, Any]] = []
+        for player in result:
+            if isinstance(player, dict):
+                players.append(player)
+        return players
+
+    def message_player(
+        self,
+        player_id: str,
+        message: str,
+        by: str,
+        *,
+        save_message: bool = False,
+        player_name: Optional[str] = None,
+    ) -> bool:
+        payload: Dict[str, Any] = {
+            "player_id": player_id,
+            "message": message,
+            "by": by,
+            "save_message": save_message,
+        }
+        if player_name:
+            payload["player_name"] = player_name
+
+        try:
+            response = self._request_with_reauth("POST", "message_player", json_payload=payload)
+        except requests.exceptions.RequestException as exc:
+            raise VipHTTPError(f"HTTP API request failed: {exc}") from exc
+
+        if response.status_code != 200:
+            raise VipHTTPError(f"message_player failed with status {response.status_code}: {response.text}")
+
+        data = self._parse_json(response)
+        if data.get("failed"):
+            raise VipHTTPError(f"message_player reported failure: {data.get('error') or data}")
+        result = data.get("result")
+        return bool(result)
+
+    def set_broadcast(self, message: str) -> str:
+        payload = {"message": message}
+        try:
+            response = self._request_with_reauth("POST", "set_broadcast", json_payload=payload)
+        except requests.exceptions.RequestException as exc:
+            raise VipHTTPError(f"HTTP API request failed: {exc}") from exc
+
+        if response.status_code != 200:
+            raise VipHTTPError(f"set_broadcast failed with status {response.status_code}: {response.text}")
+
+        data = self._parse_json(response)
+        if data.get("failed"):
+            raise VipHTTPError(f"set_broadcast reported failure: {data.get('error') or data}")
+
+        result = data.get("result")
+        if result is None:
+            return "Broadcast sent."
+        return str(result)
+
     @staticmethod
     def _parse_json(response: requests.Response) -> Dict[str, Any]:
         try:
@@ -970,6 +1044,16 @@ class VipGrantResult:
     detail: str
     expiration_local: datetime
     expiration_utc: datetime
+
+
+@dataclass(frozen=True)
+class TeamMessageDispatchResult:
+    recipient: str
+    attempted: int
+    sent: int
+    failed: int
+    broadcast_detail: str
+
 
 @dataclass(frozen=True)
 class PlayerVipStatus:
@@ -1059,6 +1143,54 @@ class VipService:
         expiration_utc = self._extract_latest_vip_expiration(profile)
         return PlayerVipStatus(player_id=player_id, expiration_utc=expiration_utc)
 
+    def message_team_and_broadcast(
+        self,
+        recipient: str,
+        message: str,
+        requester_display_name: str,
+    ) -> TeamMessageDispatchResult:
+        recipient_key = recipient.strip().lower()
+        if recipient_key not in {"axis", "allies", "both"}:
+            raise VipHTTPError("Recipient must be one of: axis, allies, both.")
+
+        text = message.strip()
+        if not text:
+            raise VipHTTPError("Message cannot be empty.")
+
+        players = self._http_client.get_players()
+        targets = self._filter_players_by_team(players, recipient_key)
+        attempted = len(targets)
+        sent = 0
+        failed = 0
+
+        for player in targets:
+            player_id = self._extract_player_id(player)
+            if not player_id:
+                failed += 1
+                continue
+
+            player_name = self._extract_player_name(player)
+            try:
+                self._http_client.message_player(
+                    player_id=player_id,
+                    message=text,
+                    by=requester_display_name,
+                    save_message=False,
+                    player_name=player_name,
+                )
+                sent += 1
+            except VipHTTPError:
+                failed += 1
+
+        broadcast_detail = self._http_client.set_broadcast(text)
+        return TeamMessageDispatchResult(
+            recipient=recipient_key,
+            attempted=attempted,
+            sent=sent,
+            failed=failed,
+            broadcast_detail=broadcast_detail,
+        )
+
     def _determine_extended_expiration(
         self,
         player_id: str,
@@ -1106,6 +1238,60 @@ class VipService:
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=timezone.utc)
         return parsed
+
+    @staticmethod
+    def _extract_player_id(player: Any) -> Optional[str]:
+        if not isinstance(player, dict):
+            return None
+        for key in ("player_id", "steam_id_64", "steam_id", "id"):
+            value = player.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    @staticmethod
+    def _extract_player_name(player: Any) -> Optional[str]:
+        if not isinstance(player, dict):
+            return None
+        for key in ("player_name", "name"):
+            value = player.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    @staticmethod
+    def _extract_team_name(player: Any) -> Optional[str]:
+        if not isinstance(player, dict):
+            return None
+        for key in ("team", "team_name", "team_side"):
+            value = player.get(key)
+            normalized = VipService._normalize_team_value(value)
+            if normalized:
+                return normalized
+        return None
+
+    @staticmethod
+    def _normalize_team_value(value: Any) -> Optional[str]:
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"axis"}:
+                return "axis"
+            if lowered in {"allies", "allied"}:
+                return "allies"
+        return None
+
+    @staticmethod
+    def _filter_players_by_team(players: Any, recipient: str) -> List[Dict[str, Any]]:
+        if not isinstance(players, list):
+            return []
+        if recipient == "both":
+            return [player for player in players if isinstance(player, dict)]
+        filtered: List[Dict[str, Any]] = []
+        for player in players:
+            team_name = VipService._extract_team_name(player)
+            if team_name == recipient and isinstance(player, dict):
+                filtered.append(player)
+        return filtered
 
 
 class VipRequestModal(Modal):
@@ -1748,6 +1934,82 @@ class FrontlinePassBot(commands.Bot):
 
             followup_message = await interaction.followup.send(
                 body,
+                ephemeral=True,
+                wait=True,
+            )
+            schedule_ephemeral_cleanup(interaction, message=followup_message)
+
+        @self.tree.command(
+            name="server_message",
+            description="Send a message to Axis, Allies, or Both, then set the server broadcast message.",
+        )
+        @app_commands.describe(
+            recipient="Who should receive the in-game direct message",
+            message="Message text to send in-game",
+        )
+        @app_commands.choices(
+            recipient=[
+                app_commands.Choice(name="Axis", value="axis"),
+                app_commands.Choice(name="Allies", value="allies"),
+                app_commands.Choice(name="Both", value="both"),
+            ]
+        )
+        async def server_message(
+            interaction: discord.Interaction,
+            recipient: app_commands.Choice[str],
+            message: str,
+        ) -> None:
+            if not self._user_has_moderator_privileges(interaction.user):
+                await interaction.response.send_message(
+                    "You need moderator permissions to use this command.",
+                    ephemeral=True,
+                )
+                schedule_ephemeral_cleanup(interaction)
+                return
+
+            cleaned_message = message.strip()
+            if not cleaned_message:
+                await interaction.response.send_message(
+                    "Message cannot be empty.",
+                    ephemeral=True,
+                )
+                schedule_ephemeral_cleanup(interaction)
+                return
+
+            await interaction.response.defer(ephemeral=True)
+            try:
+                result = await asyncio.to_thread(
+                    self.vip_service.message_team_and_broadcast,
+                    recipient.value,
+                    cleaned_message,
+                    interaction.user.display_name,
+                )
+            except VipHTTPError as exc:
+                followup_message = await interaction.followup.send(
+                    f"Unable to deliver message: {exc}",
+                    ephemeral=True,
+                    wait=True,
+                )
+                schedule_ephemeral_cleanup(interaction, message=followup_message)
+                return
+            except Exception as exc:
+                logging.exception("Unexpected error while sending server message: %s", exc)
+                followup_message = await interaction.followup.send(
+                    "Unexpected error while sending the in-game message.",
+                    ephemeral=True,
+                    wait=True,
+                )
+                schedule_ephemeral_cleanup(interaction, message=followup_message)
+                return
+
+            followup_message = await interaction.followup.send(
+                (
+                    f"Recipient: {result.recipient}\n"
+                    f"Direct messages attempted: {result.attempted}\n"
+                    f"Direct messages sent: {result.sent}\n"
+                    f"Direct message failures: {result.failed}\n"
+                    f"Broadcast result: {result.broadcast_detail}"
+                ),
                 ephemeral=True,
                 wait=True,
             )

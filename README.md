@@ -7,6 +7,7 @@ Frontline Pass is a Discord bot that lets Hell Let Loose players enter their T17
 - **Self-service VIPs** - players press **Get VIP**, paste their Player-ID, and receive VIP without moderator intervention.
 - **Quick VIP panel** - users in a dedicated Discord channel can press **Quick VIP**, paste any player_id, and grant a fixed 10-minute VIP window.
 - **Moderator assist: /assignvip** - moderators can grant a temporary Discord role to a member so they can access the VIP channel to claim; the role is removed automatically after claiming.
+- **Team messaging: /server_message** - moderators can send in-game messages to Axis, Allies, or Both, and also update the server broadcast message in one command.
 - **HTTP transport** - all VIP grants are issued through the CRCON HTTP API (bearer token preferred, login fallback optional).
 - **Always-on control panel** - the Discord message survives restarts and can be reposted via `/repost_frontline_controls`.
 - **No local database** - no SQLite or JSON persistence; everything is handled through the modal and CRCON.
@@ -66,7 +67,7 @@ All primary settings live in `config.jsonc` (JSON5 syntax). Environment variable
 | `LOCAL_TIMEZONE` | Yes | Timezone for human-readable expiry timestamps (e.g. `Australia/Sydney`). |
 | `ANNOUNCEMENT_MESSAGE_ID` | Optional | Reuse an existing Discord message for the control panel. |
 | `QUICK_VIP_ANNOUNCEMENT_MESSAGE_ID` | Optional | Reuse an existing Discord message for the Quick VIP control panel. |
-| `MODERATOR_ROLE_ID` | Optional | Discord role ID treated as moderator for privileged commands such as `/assignvip` and `/set_vip_duration`. |
+| `MODERATOR_ROLE_ID` | Optional | Discord role ID treated as moderator for privileged commands such as `/assignvip`, `/set_vip_duration`, and `/server_message`. |
 | `VIP_TEMP_ROLE_ID`, `VIP_CLAIM_CHANNEL_ID` | Optional | Used by `/assignvip`. `VIP_TEMP_ROLE_ID` is a temporary Discord role that grants access to your VIP claim channel. `VIP_CLAIM_CHANNEL_ID` is the channel ID where the control panel lives (falls back to `CHANNEL_ID` if unset). |
 | `VIP_ASSIGN_LIMIT` | Optional | Weekly per-moderator cap for `/assignvip`. Defaults to `5` uses and resets every Monday at 01:00 in `LOCAL_TIMEZONE`. |
 | `COMMAND_GUILD_IDS` / `COMMAND_GUILD_ID` | Optional | Comma-separated guild IDs (or a single ID) to sync slash commands instantly to those servers. If unset, commands are synced globally (may take up to ~1 hour to propagate). |
@@ -128,6 +129,26 @@ Admins can refresh the Quick VIP panel at any time with `/repost_quick_vip_contr
 ### Check a player's VIP status
 
 Use `/show_player_vip` and paste the Player ID string that you can copy from [https://hllrecords.com](https://hllrecords.com). The bot calls the CRCON HTTP API and replies with the current VIP status and the expiration time rendered in your configured local timezone.
+
+### Send team + broadcast message
+
+Use `/server_message` with:
+
+1. `recipient`: `Axis`, `Allies`, or `Both`
+2. `message`: the text to deliver in-game
+
+The bot will:
+
+1. Query current players from CRCON.
+2. Send direct in-game messages to players matching the selected team scope.
+3. Set the server broadcast message with the same text.
+4. Reply with delivery stats (`attempted`, `sent`, `failed`) and the broadcast API result.
+
+Required CRCON API permissions for the bot account:
+
+- `api.can_view_get_players`
+- `api.can_message_players`
+- `api.can_change_broadcast_message`
 
 ## Deployment Notes
 

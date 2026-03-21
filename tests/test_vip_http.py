@@ -211,6 +211,70 @@ class VipHttpClientTests(unittest.TestCase):
         with self.assertRaises(VipHTTPError):
             client.get_player_profile("player-id")
 
+    def test_get_players_fetches_players(self) -> None:
+        session = DummySession(
+            DummyResponse(
+                200,
+                {
+                    "result": [
+                        {"player_id": "p1", "team": "Axis"},
+                        {"player_id": "p2", "team": "Allies"},
+                    ]
+                },
+            )
+        )
+        client = VipHttpClient(
+            HttpCredentials(base_url="https://example/api", bearer_token="abc123"),
+            session=session,
+        )
+
+        players = client.get_players()
+
+        self.assertEqual(len(players), 2)
+        self.assertEqual(session.calls[0]["method"], "GET")
+        self.assertEqual(session.calls[0]["url"], "https://example/api/get_players")
+
+    def test_message_player_posts_payload(self) -> None:
+        session = DummySession(DummyResponse(200, {"result": True}))
+        client = VipHttpClient(
+            HttpCredentials(base_url="https://example/api", bearer_token="abc123"),
+            session=session,
+        )
+
+        sent = client.message_player(
+            player_id="p1",
+            message="Hello team",
+            by="BotAdmin",
+            save_message=False,
+            player_name="PlayerOne",
+        )
+
+        self.assertTrue(sent)
+        self.assertEqual(session.calls[0]["url"], "https://example/api/message_player")
+        self.assertEqual(
+            session.calls[0]["json"],
+            {
+                "player_id": "p1",
+                "message": "Hello team",
+                "by": "BotAdmin",
+                "save_message": False,
+                "player_name": "PlayerOne",
+            },
+        )
+
+    def test_set_broadcast_posts_message(self) -> None:
+        session = DummySession(DummyResponse(200, {"result": "ok"}))
+        client = VipHttpClient(
+            HttpCredentials(base_url="https://example/api", bearer_token="abc123"),
+            session=session,
+        )
+
+        result = client.set_broadcast("Server notice")
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(session.calls[0]["url"], "https://example/api/set_broadcast")
+        self.assertEqual(session.calls[0]["json"], {"message": "Server notice"})
+
 
 class VipServiceTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -356,6 +420,54 @@ class VipServiceTests(unittest.TestCase):
 
         self.assertEqual(status.player_id, "steam123")
         self.assertIsNone(status.expiration_utc)
+
+    def test_message_team_and_broadcast_axis(self) -> None:
+        service = VipService(self.config)
+        fake_http_client = mock.Mock()
+        fake_http_client.get_players.return_value = [
+            {"player_id": "a1", "team": "Axis", "player_name": "AxisOne"},
+            {"player_id": "a2", "team": "Axis", "player_name": "AxisTwo"},
+            {"player_id": "l1", "team": "Allies", "player_name": "AllyOne"},
+        ]
+        fake_http_client.message_player.return_value = True
+        fake_http_client.set_broadcast.return_value = "broadcast-updated"
+        service._http_client = fake_http_client  # type: ignore[attr-defined]
+
+        result = service.message_team_and_broadcast("axis", "Push now", "Moderator")
+
+        self.assertEqual(result.recipient, "axis")
+        self.assertEqual(result.attempted, 2)
+        self.assertEqual(result.sent, 2)
+        self.assertEqual(result.failed, 0)
+        self.assertEqual(result.broadcast_detail, "broadcast-updated")
+        self.assertEqual(fake_http_client.message_player.call_count, 2)
+        fake_http_client.set_broadcast.assert_called_once_with("Push now")
+
+    def test_message_team_and_broadcast_both_ignores_unknown_entries(self) -> None:
+        service = VipService(self.config)
+        fake_http_client = mock.Mock()
+        fake_http_client.get_players.return_value = [
+            {"player_id": "a1", "team": "Axis"},
+            {"team": "Axis"},
+            {"player_id": "l1", "team": "Allies"},
+            "invalid",
+        ]
+        fake_http_client.message_player.return_value = True
+        fake_http_client.set_broadcast.return_value = "broadcast-updated"
+        service._http_client = fake_http_client  # type: ignore[attr-defined]
+
+        result = service.message_team_and_broadcast("both", "All players", "Moderator")
+
+        self.assertEqual(result.attempted, 3)
+        self.assertEqual(result.sent, 2)
+        self.assertEqual(result.failed, 1)
+        self.assertEqual(fake_http_client.message_player.call_count, 2)
+
+    def test_message_team_and_broadcast_rejects_invalid_recipient(self) -> None:
+        service = VipService(self.config)
+
+        with self.assertRaises(VipHTTPError):
+            service.message_team_and_broadcast("spectators", "Hello", "Moderator")
 
 
 class RollingWindowLimiterTests(unittest.IsolatedAsyncioTestCase):
