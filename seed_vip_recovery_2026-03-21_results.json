@@ -1,0 +1,207 @@
+{
+  "executed_at_utc": "2026-03-21T04:06:09.372938Z",
+  "requested_count": 22,
+  "success_count": 22,
+  "failure_count": 0,
+  "description": "CRCON Seed VIP recovery (missed seeding window 2026-03-21)",
+  "results": [
+    {
+      "name": "ShukaBra",
+      "player_id": "410e00ecae55f18296e3b734c02d7f86",
+      "previous_latest_vip_utc": "2026-03-21T19:42:52.673000Z",
+      "new_expiration_utc": "2026-03-24T21:42:52.673000Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"410e00ecae55f18296e3b734c02d7f86\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T21:42:52.673000Z\", \"player_name\": \"ShukaBra\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "Johnny Bloggs",
+      "player_id": "07d2c7bd677c75d6c889df91ffc4fc13",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"07d2c7bd677c75d6c889df91ffc4fc13\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"Johnny Bloggs\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "Space_trumpet",
+      "player_id": "50b0a8f838e218ca9cf96c6d7565435f",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"50b0a8f838e218ca9cf96c6d7565435f\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"Space_trumpet\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "OTig0lBittysO",
+      "player_id": "81cd3196dc538b007639d969febad1f7",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"81cd3196dc538b007639d969febad1f7\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"OTig0lBittysO\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "NagHit333",
+      "player_id": "cc6f2cb78fd77e9a03862cde4a148638",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"cc6f2cb78fd77e9a03862cde4a148638\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"NagHit333\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "Ham_Ace",
+      "player_id": "a7943d9fb82b5cc872be23610d6d0657",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"a7943d9fb82b5cc872be23610d6d0657\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"Ham_Ace\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "O o o AJ o o O",
+      "player_id": "d70ae9918a9b0e40729fe1c42ac5dd6e",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"d70ae9918a9b0e40729fe1c42ac5dd6e\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"O o o AJ o o O\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "Sneket",
+      "player_id": "fd701b6f8af63e741df33b12d79b9bfc",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"fd701b6f8af63e741df33b12d79b9bfc\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"Sneket\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "WildStarfish410",
+      "player_id": "391b20af2e714f3c84d2bc38b20981ed",
+      "previous_latest_vip_utc": "2026-03-21T18:10:46.391000Z",
+      "new_expiration_utc": "2026-03-24T20:10:46.391000Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"391b20af2e714f3c84d2bc38b20981ed\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T20:10:46.391000Z\", \"player_name\": \"WildStarfish410\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "ECN343",
+      "player_id": "7683988d91246eac67895f8db5ca3c1d",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"7683988d91246eac67895f8db5ca3c1d\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"ECN343\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "Seaghan",
+      "player_id": "1af5152d7f817a4a160f259e3f0a235a",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"1af5152d7f817a4a160f259e3f0a235a\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"Seaghan\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "Swizzy",
+      "player_id": "3441aeb70958c86176e8d42d7a344165",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"3441aeb70958c86176e8d42d7a344165\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"Swizzy\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "CAPTAIN C0N3",
+      "player_id": "9ef69ccfaa6693055c357a6c1b6286c0",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"9ef69ccfaa6693055c357a6c1b6286c0\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"CAPTAIN C0N3\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "GirthwormJim",
+      "player_id": "d305f57f1a8e62dabc8828c6d04d7192",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"d305f57f1a8e62dabc8828c6d04d7192\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"GirthwormJim\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "MatgaT",
+      "player_id": "7150a4076826d51e1db8c47168202048",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"7150a4076826d51e1db8c47168202048\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"MatgaT\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "i love bags",
+      "player_id": "3ca86ce946d025bff02048b3e0314f66",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"3ca86ce946d025bff02048b3e0314f66\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"i love bags\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "wassathat",
+      "player_id": "1e591731fb968693c481498b79e069ec",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"1e591731fb968693c481498b79e069ec\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"wassathat\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "Andruw1323",
+      "player_id": "8beb829fc8036cb3df50cf21f2cbaca3",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"8beb829fc8036cb3df50cf21f2cbaca3\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"Andruw1323\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "Joel9446",
+      "player_id": "acfbaaa2dc8ab14f5a584641f2e404ef",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"acfbaaa2dc8ab14f5a584641f2e404ef\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"Joel9446\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "JebMV",
+      "player_id": "e07340be1a420a28d6ea0a3b5ff77e22",
+      "previous_latest_vip_utc": "2026-03-21T06:26:17.554000Z",
+      "new_expiration_utc": "2026-03-24T08:26:17.554000Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"e07340be1a420a28d6ea0a3b5ff77e22\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T08:26:17.554000Z\", \"player_name\": \"JebMV\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "cookiecutter",
+      "player_id": "4a7a74eefce8874f5dd8c5584ea45346",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"4a7a74eefce8874f5dd8c5584ea45346\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"cookiecutter\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    },
+    {
+      "name": "Aetius6627",
+      "player_id": "cda2c93efde1077e059b8327c32d4752",
+      "previous_latest_vip_utc": null,
+      "new_expiration_utc": "2026-03-24T06:06:09.372938Z",
+      "status_code": 200,
+      "success": true,
+      "response": "{\"result\": true, \"command\": \"add_vip\", \"arguments\": {\"player_id\": \"cda2c93efde1077e059b8327c32d4752\", \"description\": \"CRCON Seed VIP recovery (missed seeding window 2026-03-21)\", \"expiration\": \"2026-03-24T06:06:09.372938Z\", \"player_name\": \"Aetius6627\"}, \"failed\": false, \"error\": null, \"forward_results\": null, \"version\": \"v11.9.0\"}"
+    }
+  ]
+}

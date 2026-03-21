@@ -1,0 +1,346 @@
+{
+  "result": {
+    "always_apply_defaults": false,
+    "can_invoke_multiple_rules": true,
+    "rules": [
+      {
+        "commands": {
+          "set_auto_mod_level_config": {
+            "config": {
+              "dry_run": false,
+              "enabled": true,
+              "max_level": 0,
+              "min_level": 1,
+              "kick_message": "You violated rule: {violation}.\nYour grace period of {kick_grace_period}s has passed.\nYou failed to comply with the previous warnings.",
+              "punish_message": "You violated rule: {violation}.\nYou're being punished by a bot ({received_punishes}/{max_punishes}). Please work on getting those levels up in public matches\n Next check in {next_check_seconds} seconds",
+              "warning_message": "Warning, {player_name}! You violate level thresholds rules on this server: {violation}\nYou will be punished after {max_warnings} warnings (you already received {received_warnings}), then kicked. Please work on getting those levels up in public matches\n \nNext check will happen automatically in {next_check_seconds}s.",
+              "whitelist_flags": [
+                "\ud83d\udea8"
+              ],
+              "level_thresholds": {
+                "officer": {
+                  "label": "Officer",
+                  "min_level": 30,
+                  "min_players": 75
+                },
+                "spotter": {
+                  "label": "Reco (spotter)",
+                  "min_level": 30,
+                  "min_players": 75
+                },
+                "armycommander": {
+                  "label": "Commander",
+                  "min_level": 50,
+                  "min_players": 75
+                },
+                "tankcommander": {
+                  "label": "Tank Commander",
+                  "min_level": 30,
+                  "min_players": 75
+                }
+              },
+              "levelbug_enabled": true,
+              "max_level_message": "Access to this server is not allowed over level {level}",
+              "min_level_message": "Min level {level} . During peak we restrict lower levels - ANZR.org",
+              "violation_message": "{role} are not allowed under level {level}",
+              "force_kick_message": "You violated level thresholds rules on this server: {violation}. Please work on increasing your levels in public games",
+              "number_of_warnings": 3,
+              "discord_webhook_url": null,
+              "announcement_enabled": true,
+              "announcement_message": "This server is under role specific level thresholds control.\n\n{level_thresholds_msg}\nThanks for understanding.",
+              "kick_after_max_punish": true,
+              "number_of_punishments": 3,
+              "punish_interval_seconds": 60,
+              "warning_interval_seconds": 60,
+              "kick_grace_period_seconds": 60,
+              "min_squad_players_for_kick": 0,
+              "min_server_players_for_kick": 0,
+              "min_squad_players_for_punish": 0,
+              "min_server_players_for_punish": 0,
+              "only_announce_impacted_players": true,
+              "dont_do_anything_below_this_number_of_players": 50
+            }
+          },
+          "set_auto_mod_no_leader_config": {
+            "config": {
+              "dry_run": false,
+              "enabled": true,
+              "immune_roles": [
+                "sniper"
+              ],
+              "kick_message": "Your Squad ({squad_name}) must have an officer.\nYour grace period of {kick_grace_period}s has passed.\nYou failed to comply with the previous warnings.",
+              "punish_message": "Your squad ({squad_name}) must have an officer.\nYou're being punished by a bot ({received_punishes}/{max_punishes}).\nNext check in {next_check_seconds} seconds",
+              "number_of_notes": 1,
+              "warning_message": "Warning, {player_name}! Your squad ({squad_name}) does not have an officer. Players of squads without an officer will be punished after {max_warnings} warnings (you already received {received_warnings}), then kicked.\nNext check will happen automatically in {next_check_seconds}s.",
+              "whitelist_flags": [],
+              "number_of_warnings": 3,
+              "discord_webhook_url": null,
+              "immune_player_level": 0,
+              "kick_after_max_punish": true,
+              "number_of_punishments": 3,
+              "notes_interval_seconds": 10,
+              "punish_interval_seconds": 60,
+              "warning_interval_seconds": 60,
+              "kick_grace_period_seconds": 60,
+              "min_squad_players_for_kick": 0,
+              "min_server_players_for_kick": 50,
+              "min_squad_players_for_punish": 0,
+              "min_server_players_for_punish": 0,
+              "dont_do_anything_below_this_number_of_players": 50
+            }
+          },
+          "set_auto_mod_solo_tank_config": {
+            "config": {
+              "dry_run": false,
+              "enabled": true,
+              "kick_message": "You violated solo tank rule on this server.\nYour grace period of {kick_grace_period}s has passed.\nYou failed to comply with the previous warnings.",
+              "punish_message": "You violated solo tank rule on this server.You're being punished by a bot ({received_punishes}/{max_punishes}).Next check in {next_check_seconds}s. You will be automatically kicked if you faily to comply.",
+              "number_of_notes": 2,
+              "warning_message": "Warning, {player_name} !\n\nYou can't play solo tank on this server !\n\nYou will be punished after {max_warnings} warnings\n(you already received {received_warnings})\n\nNext check will happen automatically in {next_check_seconds}s.",
+              "whitelist_flags": [
+                "\ud83d\udea8"
+              ],
+              "number_of_warnings": 3,
+              "discord_webhook_url": null,
+              "immune_player_level": 0,
+              "kick_after_max_punish": true,
+              "number_of_punishments": 7,
+              "notes_interval_seconds": 20,
+              "punish_interval_seconds": 90,
+              "warning_interval_seconds": 30,
+              "kick_grace_period_seconds": 60,
+              "min_server_players_for_kick": 0,
+              "min_server_players_for_punish": 0,
+              "dont_do_anything_below_this_number_of_players": 0
+            }
+          }
+        },
+        "conditions": {
+          "time_of_day": {
+            "max": "23:59",
+            "min": "15:00",
+            "timezone": "Australia/Sydney"
+          }
+        }
+      },
+      {
+        "commands": {
+          "set_map_rotation": {
+            "map_names": [
+              "carentan_warfare",
+              "omahabeach_warfare",
+              "utahbeach_warfare",
+              "stmariedumont_warfare",
+              "stmereeglise_warfare"
+            ]
+          }
+        },
+        "conditions": {
+          "player_count": {
+            "max": 39,
+            "min": 0
+          }
+        }
+      },
+      {
+        "commands": {
+          "set_seed_vip_config": {
+            "dry_run": true,
+            "enabled": true
+          }
+        },
+        "conditions": {
+          "time_of_day": {
+            "max": "09:59",
+            "min": "00:00",
+            "timezone": "Australia/Sydney"
+          }
+        }
+      },
+      {
+        "commands": {
+          "set_seed_vip_config": {
+            "dry_run": false,
+            "enabled": true
+          }
+        },
+        "conditions": {
+          "time_of_day": {
+            "max": "21:59",
+            "min": "10:00",
+            "timezone": "Australia/Sydney"
+          }
+        }
+      },
+      {
+        "commands": {
+          "set_seed_vip_config": {
+            "dry_run": true,
+            "enabled": true
+          }
+        },
+        "conditions": {
+          "time_of_day": {
+            "max": "23:59",
+            "min": "22:00",
+            "timezone": "Australia/Sydney"
+          }
+        }
+      },
+      {
+        "commands": {
+          "set_idle_autokick_time": {
+            "minutes": 6
+          }
+        },
+        "conditions": {
+          "player_count": {
+            "max": 100,
+            "min": 66
+          }
+        }
+      },
+      {
+        "commands": {
+          "set_idle_autokick_time": {
+            "minutes": 0
+          }
+        },
+        "conditions": {
+          "player_count": {
+            "max": 65,
+            "min": 0
+          }
+        }
+      },
+      {
+        "commands": {
+          "set_auto_mod_level_config": {
+            "config": {
+              "dry_run": false,
+              "enabled": false,
+              "max_level": 0,
+              "min_level": 1,
+              "kick_message": "You violated rule: {violation}.\nYour grace period of {kick_grace_period}s has passed.\nYou failed to comply with the previous warnings.",
+              "punish_message": "You violated rule: {violation}.\nYou're being punished by a bot ({received_punishes}/{max_punishes}). Please work on getting those levels up in public matches\n Next check in {next_check_seconds} seconds",
+              "warning_message": "Warning, {player_name}! You violate level thresholds rules on this server: {violation}\nYou will be punished after {max_warnings} warnings (you already received {received_warnings}), then kicked. Please work on getting those levels up in public matches\n \nNext check will happen automatically in {next_check_seconds}s.",
+              "whitelist_flags": [
+                "\ud83d\udea8"
+              ],
+              "level_thresholds": {
+                "officer": {
+                  "label": "Officer",
+                  "min_level": 30,
+                  "min_players": 75
+                },
+                "spotter": {
+                  "label": "Reco (spotter)",
+                  "min_level": 30,
+                  "min_players": 75
+                },
+                "armycommander": {
+                  "label": "Commander",
+                  "min_level": 50,
+                  "min_players": 75
+                },
+                "tankcommander": {
+                  "label": "Tank Commander",
+                  "min_level": 30,
+                  "min_players": 75
+                }
+              },
+              "levelbug_enabled": true,
+              "max_level_message": "Access to this server is not allowed over level {level}",
+              "min_level_message": "Min level {level} . During peak we restrict lower levels - ANZR.org",
+              "violation_message": "{role} are not allowed under level {level}",
+              "force_kick_message": "You violated level thresholds rules on this server: {violation}. Please work on increasing your levels in public games",
+              "number_of_warnings": 3,
+              "discord_webhook_url": null,
+              "announcement_enabled": true,
+              "announcement_message": "This server is under role specific level thresholds control.\n\n{level_thresholds_msg}\nThanks for understanding.",
+              "kick_after_max_punish": true,
+              "number_of_punishments": 3,
+              "punish_interval_seconds": 60,
+              "warning_interval_seconds": 60,
+              "kick_grace_period_seconds": 60,
+              "min_squad_players_for_kick": 0,
+              "min_server_players_for_kick": 0,
+              "min_squad_players_for_punish": 0,
+              "min_server_players_for_punish": 0,
+              "only_announce_impacted_players": true,
+              "dont_do_anything_below_this_number_of_players": 50
+            }
+          },
+          "set_auto_mod_no_leader_config": {
+            "config": {
+              "dry_run": false,
+              "enabled": false,
+              "immune_roles": [
+                "sniper"
+              ],
+              "kick_message": "Your Squad ({squad_name}) must have an officer.\nYour grace period of {kick_grace_period}s has passed.\nYou failed to comply with the previous warnings.",
+              "punish_message": "Your squad ({squad_name}) must have an officer.\nYou're being punished by a bot ({received_punishes}/{max_punishes}).\nNext check in {next_check_seconds} seconds",
+              "number_of_notes": 1,
+              "warning_message": "Warning, {player_name}! Your squad ({squad_name}) does not have an officer. Players of squads without an officer will be punished after {max_warnings} warnings (you already received {received_warnings}), then kicked.\nNext check will happen automatically in {next_check_seconds}s.",
+              "whitelist_flags": [],
+              "number_of_warnings": 3,
+              "discord_webhook_url": null,
+              "immune_player_level": 0,
+              "kick_after_max_punish": true,
+              "number_of_punishments": 3,
+              "notes_interval_seconds": 10,
+              "punish_interval_seconds": 60,
+              "warning_interval_seconds": 60,
+              "kick_grace_period_seconds": 60,
+              "min_squad_players_for_kick": 0,
+              "min_server_players_for_kick": 50,
+              "min_squad_players_for_punish": 0,
+              "min_server_players_for_punish": 0,
+              "dont_do_anything_below_this_number_of_players": 50
+            }
+          },
+          "set_auto_mod_solo_tank_config": {
+            "config": {
+              "dry_run": false,
+              "enabled": true,
+              "kick_message": "You violated solo tank rule on this server.\nYour grace period of {kick_grace_period}s has passed.\nYou failed to comply with the previous warnings.",
+              "punish_message": "You violated solo tank rule on this server.You're being punished by a bot ({received_punishes}/{max_punishes}).Next check in {next_check_seconds}s. You will be automatically kicked if you faily to comply.",
+              "number_of_notes": 1,
+              "warning_message": "Warning, {player_name} !\n\nYou can't play solo tank on this server !\n\nYou will be punished after {max_warnings} warnings\n(you already received {received_warnings})\n\nNext check will happen automatically in {next_check_seconds}s.",
+              "whitelist_flags": [
+                "\ud83d\udea8"
+              ],
+              "number_of_warnings": 2,
+              "discord_webhook_url": null,
+              "immune_player_level": 0,
+              "kick_after_max_punish": true,
+              "number_of_punishments": 6,
+              "notes_interval_seconds": 20,
+              "punish_interval_seconds": 70,
+              "warning_interval_seconds": 30,
+              "kick_grace_period_seconds": 60,
+              "min_server_players_for_kick": 0,
+              "min_server_players_for_punish": 0,
+              "dont_do_anything_below_this_number_of_players": 0
+            }
+          }
+        },
+        "conditions": {
+          "time_of_day": {
+            "max": "14:59",
+            "min": "00:00",
+            "timezone": "Australia/Sydney"
+          }
+        }
+      }
+    ]
+  },
+  "command": "get_auto_settings",
+  "arguments": {
+    "server_number": 2
+  },
+  "failed": false,
+  "error": null,
+  "forwards_results": null,
+  "version": "v11.9.0"
+}

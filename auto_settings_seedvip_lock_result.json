@@ -1,0 +1,27 @@
+{
+  "removed_old_seed_rules": 3,
+  "seed_rules_after": 1,
+  "seed_rule_after": {
+    "commands": {
+      "set_seed_vip_config": {
+        "dry_run": false,
+        "enabled": true
+      }
+    },
+    "conditions": {
+      "time_of_day": {
+        "max": "23:59",
+        "min": "00:00",
+        "timezone": "Australia/Sydney"
+      },
+      "player_count": {
+        "max": 50,
+        "min": 0
+      }
+    }
+  },
+  "seed_vip_now": {
+    "enabled": true,
+    "dry_run": false
+  }
+}
