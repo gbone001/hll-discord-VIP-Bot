@@ -1,6 +1,6 @@
 # Frontline Pass
 
-Frontline Pass is a Discord bot that lets Hell Let Loose players enter their T17/Steam ID on demand and self-grant temporary VIP status via the CRCON HTTP API using a bearer token or login credentials.
+Frontline Pass is a Discord bot that lets Hell Let Loose players enter their `player_id` from hllrecords.com on demand and self-grant temporary VIP status via the CRCON HTTP API using a bearer token or login credentials.
 
 ## Highlights
 
@@ -26,6 +26,8 @@ cp config.example.jsonc config.jsonc     # macOS / Linux
 ```
 
 Environment-specific overrides are optional. Create an `.env` only if you need to override values defined in `config.jsonc`.
+
+If you want to run entirely from environment variables, copy `.env.dist` to `.env` and fill in the required sections from top to bottom. The minimum working set is `DISCORD_TOKEN`, `CHANNEL_ID`, `VIP_DURATION_HOURS`, `LOCAL_TIMEZONE`, `CRCON_HTTP_BASE_URL`, and either `CRCON_HTTP_BEARER_TOKEN` or both `CRCON_HTTP_USERNAME` and `CRCON_HTTP_PASSWORD`.
 
 Configure `config.jsonc`, then start the bot:
 
@@ -105,7 +107,7 @@ The bot validates required settings on startup and exits with a clear error when
 
 ## Bot Experience
 
-1. **Get VIP** - clicking **Get VIP** opens a modal that collects the player's T17/Steam ID. Enter the string (for example `2805d5bbe14b6ec432f82e5cb859d012` from https://hllrecords.com) and the bot will call the CRCON HTTP API to grant VIP, then report the expiry time back to you. The ID is not persisted; users paste it each time they request access.
+1. **Get VIP** - clicking **Get VIP** opens a modal that collects the player's `player_id`. Enter the 32-character string (for example `2805d5bbe14b6ec432f82e5cb859d012` from https://hllrecords.com) and the bot will call the CRCON HTTP API to grant VIP, then report the expiry time back to you. The `player_id` is not persisted; users paste it each time they request access.
 
 Admins can refresh the message at any time with `/repost_frontline_controls`.
 

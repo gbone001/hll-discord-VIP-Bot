@@ -1,6 +1,8 @@
 ## Purpose
 Short onboarding notes for AI coding agents working on this repository. Focus on the runtime entrypoint, config, external integrations (CRCON/RCON), and developer workflows you’ll need to modify or run the bot.
 
+`AGENTS.md` at the repository root is the canonical instruction file for this project. Keep repository-wide agent rules there, and treat this file as supplemental implementation context.
+
 ### Quick facts
 - Single-file Python app: `frontline-pass.py` is the canonical source and runtime entrypoint (it calls `bot.run(DISCORD_TOKEN)`).
 - Config: `config.jsonc` (JSON5) is primary; `.env` is read via `dotenv` as overrides. The loader also accepts `FRONTLINE_CONFIG_PATH`.

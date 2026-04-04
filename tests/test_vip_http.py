@@ -23,6 +23,10 @@ VipHttpClient = frontline_pass.VipHttpClient
 VipHTTPError = frontline_pass.VipHTTPError
 VipService = frontline_pass.VipService
 RollingWindowLimiter = frontline_pass.RollingWindowLimiter
+FrontlinePassBot = frontline_pass.FrontlinePassBot
+QuickVipView = frontline_pass.QuickVipView
+PlayerVipStatus = frontline_pass.PlayerVipStatus
+QUICK_VIP_GIVER_ROLE_NAMES = frontline_pass.QUICK_VIP_GIVER_ROLE_NAMES
 
 
 class DummyResponse:
@@ -77,6 +81,102 @@ class DummySession:
 
     def post(self, url, json=None, headers=None, timeout=None, params=None):
         return self.request("POST", url, json=json, headers=headers, timeout=timeout, params=params)
+
+
+class DummyGuildPermissions:
+    def __init__(self, *, administrator: bool = False) -> None:
+        self.administrator = administrator
+
+
+class DummyRole:
+    def __init__(self, role_id: int, name: str) -> None:
+        self.id = role_id
+        self.name = name
+        self.mention = f"<@&{role_id}>"
+
+
+class DummyMember:
+    def __init__(
+        self,
+        user_id: int,
+        display_name: str,
+        *,
+        roles: list | None = None,
+        administrator: bool = False,
+    ) -> None:
+        self.id = user_id
+        self.display_name = display_name
+        self.roles = roles or []
+        self.guild_permissions = DummyGuildPermissions(administrator=administrator)
+        self.mention = f"<@{user_id}>"
+        self.added_roles = []
+        self.removed_roles = []
+        self.sent_messages = []
+
+    async def add_roles(self, role, *, reason=None) -> None:
+        self.added_roles.append((role, reason))
+
+    async def remove_roles(self, role, *, reason=None) -> None:
+        self.removed_roles.append((role, reason))
+
+    async def send(self, message: str) -> None:
+        self.sent_messages.append(message)
+
+
+class DummyGuild:
+    def __init__(self, roles: list | None = None) -> None:
+        self._roles = {role.id: role for role in (roles or [])}
+
+    def get_role(self, role_id: int):
+        return self._roles.get(role_id)
+
+
+class DummyResponseController:
+    def __init__(self) -> None:
+        self.messages = []
+        self.deferred = []
+        self._done = False
+
+    async def send_message(self, content: str, **kwargs) -> None:
+        self.messages.append((content, kwargs))
+        self._done = True
+
+    async def defer(self, **kwargs) -> None:
+        self.deferred.append(kwargs)
+        self._done = True
+
+    def is_done(self) -> bool:
+        return self._done
+
+
+class DummyFollowupController:
+    def __init__(self) -> None:
+        self.messages = []
+
+    async def send(self, content: str, **kwargs):
+        self.messages.append((content, kwargs))
+        return {"content": content, "kwargs": kwargs}
+
+
+class DummyChannel:
+    def __init__(self) -> None:
+        self.messages = []
+        self.id = 999
+
+    async def send(self, content: str) -> None:
+        self.messages.append(content)
+
+
+class DummyInteraction:
+    def __init__(self, *, user, guild=None, channel=None) -> None:
+        self.user = user
+        self.guild = guild
+        self.channel = channel or DummyChannel()
+        self.response = DummyResponseController()
+        self.followup = DummyFollowupController()
+
+    async def original_response(self):
+        return mock.AsyncMock()
 
 
 class VipHttpClientTests(unittest.TestCase):
@@ -524,6 +624,137 @@ class RollingWindowLimiterTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result.allowed)
             self.assertEqual(result.used, 1)
             self.assertEqual(result.limit, 1)
+
+    async def test_get_usage_reports_limit_without_consuming(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage_path = pathlib.Path(tmpdir) / "quick_limit.json"
+            limiter = RollingWindowLimiter(
+                window=timedelta(hours=24),
+                default_limit=1,
+                storage_path=storage_path,
+            )
+
+            usage_before = await limiter.get_usage(42)
+            usage_after_consume = await limiter.try_consume(42)
+            usage_after = await limiter.get_usage(42)
+
+            self.assertTrue(usage_before.allowed)
+            self.assertEqual(usage_before.used, 0)
+            self.assertTrue(usage_after_consume.allowed)
+            self.assertFalse(usage_after.allowed)
+            self.assertEqual(usage_after.used, 1)
+            self.assertEqual(usage_after.limit, 1)
+            self.assertIsNotNone(usage_after.next_available_at)
+
+
+class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addAsyncCleanup(self._cleanup_tempdir)
+        self.base_config = AppConfig(
+            discord_token="token",
+            vip_duration_hours=4,
+            channel_id=1,
+            timezone=pytz.UTC,
+            timezone_name="UTC",
+            http_credentials=HttpCredentials(
+                base_url="https://example",
+                bearer_token="abc123",
+            ),
+            vip_assign_limit=2,
+        )
+
+    async def _cleanup_tempdir(self) -> None:
+        self.tempdir.cleanup()
+
+    async def _build_bot(self, *, vip_temp_role_id=None) -> FrontlinePassBot:
+        config = AppConfig(
+            discord_token=self.base_config.discord_token,
+            vip_duration_hours=self.base_config.vip_duration_hours,
+            channel_id=self.base_config.channel_id,
+            timezone=self.base_config.timezone,
+            timezone_name=self.base_config.timezone_name,
+            http_credentials=self.base_config.http_credentials,
+            vip_assign_limit=self.base_config.vip_assign_limit,
+            vip_temp_role_id=vip_temp_role_id,
+        )
+        bot = FrontlinePassBot(config, mock.Mock())
+        bot.vip_assign_limiter = frontline_pass.VipAssignLimiter(
+            config.timezone,
+            default_limit=config.vip_assign_limit,
+            storage_path=pathlib.Path(self.tempdir.name) / "vip_assign_usage.json",
+        )
+        bot.quick_vip_giver_limiter = RollingWindowLimiter(
+            window=timedelta(hours=24),
+            default_limit=1,
+            storage_path=pathlib.Path(self.tempdir.name) / "quick_vip_usage.json",
+        )
+        await bot._register_commands()
+        self.addAsyncCleanup(bot.close)
+        return bot
+
+    async def test_show_player_vip_uses_to_thread(self) -> None:
+        bot = await self._build_bot()
+        bot.vip_service.get_player_vip_status = mock.Mock(  # type: ignore[assignment]
+            return_value=PlayerVipStatus(
+                player_id="player-id",
+                expiration_utc=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        interaction = DummyInteraction(user=DummyMember(1, "Admin", administrator=True))
+        command = bot.tree.get_command("show_player_vip")
+        self.assertIsNotNone(command)
+
+        with (
+            mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"),
+            mock.patch.object(frontline_pass.asyncio, "to_thread", new=mock.AsyncMock()) as to_thread_mock,
+        ):
+            to_thread_mock.return_value = PlayerVipStatus(
+                player_id="player-id",
+                expiration_utc=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            )
+            await command.callback(interaction, "player-id")  # type: ignore[union-attr]
+
+        to_thread_mock.assert_awaited_once()
+        args = to_thread_mock.await_args.args
+        self.assertEqual(args[0], bot.vip_service.get_player_vip_status)
+        self.assertEqual(args[1], "player-id")
+
+    async def test_assignvip_does_not_consume_limit_when_role_config_missing(self) -> None:
+        bot = await self._build_bot(vip_temp_role_id=None)
+        moderator = DummyMember(7, "Moderator", administrator=True)
+        member = DummyMember(8, "Target")
+        interaction = DummyInteraction(user=moderator, guild=DummyGuild())
+        command = bot.tree.get_command("assignvip")
+        self.assertIsNotNone(command)
+
+        with mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"):
+            await command.callback(interaction, member)  # type: ignore[union-attr]
+
+        used, limit = await bot.vip_assign_limiter.get_usage(moderator.id)
+        self.assertEqual(used, 0)
+        self.assertEqual(limit, 2)
+        self.assertEqual(len(member.added_roles), 0)
+
+    async def test_quick_vip_failure_does_not_consume_usage(self) -> None:
+        bot = await self._build_bot()
+        quick_vip_role_name = next(iter(QUICK_VIP_GIVER_ROLE_NAMES))
+        quick_vip_user = DummyMember(
+            9,
+            "QuickVIP",
+            roles=[DummyRole(99, quick_vip_role_name)],
+        )
+        interaction = DummyInteraction(user=quick_vip_user, guild=DummyGuild())
+        vip_service = mock.Mock()
+        vip_service.grant_fixed_vip.side_effect = VipHTTPError("CRCON offline")
+        view = QuickVipView(bot, bot.config, vip_service)
+
+        with mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"):
+            await view.handle_modal_submission(interaction, "2805d5bbe14b6ec432f82e5cb859d012")
+
+        usage = await bot.quick_vip_giver_limiter.get_usage(quick_vip_user.id)
+        self.assertTrue(usage.allowed)
+        self.assertEqual(usage.used, 0)
 
 
 if __name__ == "__main__":

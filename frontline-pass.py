@@ -68,7 +68,7 @@ def build_announcement_embed(
 ) -> discord.Embed:
     description_lines = [
         "Use the button below to activate your VIP access.",
-        'When registering you need to add your player_id number string i.e. "2805d5bbe14b6ec432f82e5cb859d012" from https://hllrecords.com.',
+        'When registering you need to paste your player_id string, for example "2805d5bbe14b6ec432f82e5cb859d012", from https://hllrecords.com.',
         f"VIP duration: **{vip_duration_hours:g} hours**.",
     ]
     embed = discord.Embed(
@@ -235,7 +235,7 @@ def _parse_bool_env(name: str, raw: Optional[str], errors: List[str]) -> Optiona
 
 def _load_raw_config() -> Tuple[Dict[str, Any], Optional[Path]]:
     candidate_paths: List[Path] = []
-    env_path = os.getenv("FRONTLINE_CONFIG_PATH") or os.getenv("CRCON_CONFIG_PATH")
+    env_path = os.getenv("FRONTLINE_CONFIG_PATH")
     if env_path:
         candidate_paths.append(Path(env_path))
     base_dir = Path(__file__).resolve().parent
@@ -342,6 +342,30 @@ class RollingWindowLimiter:
             entries.append(now.isoformat())
             self._save_state()
             return RollingWindowUsageResult(True, used + 1, limit)
+
+    async def get_usage(self, user_id: int) -> RollingWindowUsageResult:
+        async with self._lock:
+            now = datetime.now(timezone.utc)
+            changed = self._prune(now)
+            limit = max(int(self._state.get("limit", 1)), 1)
+            usage_map = self._state.setdefault("usage", {})
+            key = str(user_id)
+            entries = usage_map.setdefault(key, [])
+            if not isinstance(entries, list):
+                entries = []
+                usage_map[key] = entries
+                changed = True
+
+            used = len(entries)
+            next_available = None
+            if used >= limit and entries:
+                oldest = self._parse_datetime(entries[0])
+                next_available = oldest + self._window if oldest else None
+
+            if changed:
+                self._save_state()
+
+            return RollingWindowUsageResult(used < limit, used, limit, next_available)
 
     def _load_state(self) -> None:
         try:
@@ -1313,7 +1337,7 @@ class VipRequestModal(Modal):
         super().__init__(title="Request VIP Access", custom_id="frontline-pass-vip-modal")
         self._parent_view = parent_view
         self.player_id = TextInput(
-            label="T17 / Steam ID",
+            label="HLL player_id",
             placeholder=PLAYER_ID_PLACEHOLDER,
             custom_id="frontline-pass-vip-player-id-input",
             min_length=32,
@@ -1365,16 +1389,16 @@ class CombinedView(PersistentView):
     def refresh_vip_label(self) -> None:
         self._refresh_button_label()
 
-    async def handle_vip_modal_submission(self, interaction: discord.Interaction, steam_id: str) -> None:
-        steam_id = steam_id.strip()
-        if not steam_id:
-            await interaction.response.send_message("T17 ID cannot be empty.", ephemeral=True)
+    async def handle_vip_modal_submission(self, interaction: discord.Interaction, player_id: str) -> None:
+        player_id = player_id.strip()
+        if not player_id:
+            await interaction.response.send_message("player_id cannot be empty.", ephemeral=True)
             schedule_ephemeral_cleanup(interaction)
             return
 
-        if len(steam_id) != 32:
+        if len(player_id) != 32:
             await interaction.response.send_message(
-                "Player-ID must be a 32-character string copied from https://hllrecords.com.",
+                "player_id must be a 32-character string copied from https://hllrecords.com.",
                 ephemeral=True,
             )
             schedule_ephemeral_cleanup(interaction)
@@ -1383,14 +1407,14 @@ class CombinedView(PersistentView):
         await interaction.response.defer(ephemeral=True)
         await self._grant_vip_for_player(
             interaction,
-            steam_id,
+            player_id,
             player_display_name=interaction.user.display_name,
         )
 
     async def _grant_vip_for_player(
         self,
         interaction: discord.Interaction,
-        steam_id: str,
+        player_id: str,
         *,
         player_display_name: Optional[str] = None,
     ) -> None:
@@ -1399,14 +1423,14 @@ class CombinedView(PersistentView):
         try:
             result = await asyncio.to_thread(
                 self.vip_service.grant_vip,
-                steam_id,
+                player_id,
                 duration_hours,
                 self.config.timezone,
                 interaction.user.display_name,
                 player_name=player_display_name,
             )
         except VipHTTPError as exc:
-            logging.exception("Failed to grant VIP for player %s", steam_id)
+            logging.exception("Failed to grant VIP for player %s", player_id)
             followup_message = await interaction.followup.send(
                 f"Error: VIP status could not be set: {exc}",
                 ephemeral=True,
@@ -1415,7 +1439,7 @@ class CombinedView(PersistentView):
             schedule_ephemeral_cleanup(interaction, message=followup_message)
             return
         except Exception as exc:  # pragma: no cover
-            logging.exception("Unexpected error while granting VIP for player %s: %s", steam_id, exc)
+            logging.exception("Unexpected error while granting VIP for player %s: %s", player_id, exc)
             followup_message = await interaction.followup.send(
                 "An unexpected error occurred while setting VIP status.",
                 ephemeral=True,
@@ -1427,7 +1451,7 @@ class CombinedView(PersistentView):
         readable_expiration = result.expiration_local.strftime("%Y-%m-%d %H:%M:%S %Z")
         logging.info(
             "Granted VIP for player %s until %s UTC (%s)",
-            steam_id,
+            player_id,
             result.expiration_utc.strftime("%Y-%m-%d %H:%M:%S"),
             "; ".join(result.status_lines),
         )
@@ -1436,7 +1460,7 @@ class CombinedView(PersistentView):
 
         header_lines = [
             f"You now have VIP for {self.config.vip_duration_label} hours!",
-            f"Linked ID: {steam_id}",
+            f"Linked player_id: {player_id}",
             f"Expiration: {readable_expiration}",
         ]
         status_summary = "\n".join(f"- {line}" for line in result.status_lines)
@@ -1478,7 +1502,7 @@ class QuickVipRequestModal(Modal):
         super().__init__(title="Grant Quick VIP", custom_id="frontline-pass-quick-vip-modal")
         self._parent_view = parent_view
         self.player_id = TextInput(
-            label="Target T17 / Steam ID",
+            label="Target player_id",
             placeholder=PLAYER_ID_PLACEHOLDER,
             custom_id="frontline-pass-quick-vip-player-id-input",
             min_length=32,
@@ -1539,7 +1563,7 @@ class QuickVipView(PersistentView):
 
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
         if member is not None and self.bot.user_has_any_role_named(member, QUICK_VIP_GIVER_ROLE_NAMES):
-            usage = await self.bot.quick_vip_giver_limiter.try_consume(member.id)
+            usage = await self.bot.quick_vip_giver_limiter.get_usage(member.id)
             if not usage.allowed:
                 next_at = usage.next_available_at
                 if next_at is not None:
@@ -1593,6 +1617,14 @@ class QuickVipView(PersistentView):
             result.expiration_utc.strftime("%Y-%m-%d %H:%M:%S"),
             "; ".join(result.status_lines),
         )
+        if member is not None and self.bot.user_has_any_role_named(member, QUICK_VIP_GIVER_ROLE_NAMES):
+            usage = await self.bot.quick_vip_giver_limiter.try_consume(member.id)
+            if not usage.allowed:
+                logging.warning(
+                    "Quick VIP grant for %s succeeded but usage recording was rejected due to a concurrent limit check for user %s.",
+                    player_id,
+                    member.id,
+                )
         self.bot.record_vip_grant(datetime.now(timezone.utc))
         await self.bot.refresh_quick_vip_announcement_message()
 
@@ -1920,7 +1952,10 @@ class FrontlinePassBot(commands.Bot):
             await interaction.response.defer(ephemeral=True)
             now = datetime.now(timezone.utc)
             try:
-                status = self.vip_service.get_player_vip_status(player_id)
+                status = await asyncio.to_thread(
+                    self.vip_service.get_player_vip_status,
+                    player_id,
+                )
             except VipHTTPError as exc:
                 followup_message = await interaction.followup.send(
                     f"Unable to fetch VIP status for {player_id}: {exc}",
@@ -2104,8 +2139,8 @@ class FrontlinePassBot(commands.Bot):
                 schedule_ephemeral_cleanup(interaction)
                 return
 
-            usage_result = await self.vip_assign_limiter.try_consume(interaction.user.id)
-            if not usage_result.allowed:
+            current_usage, current_limit = await self.vip_assign_limiter.get_usage(interaction.user.id)
+            if current_usage >= current_limit:
                 await interaction.response.send_message(
                     "Weekly limit reached - reset each Monday",
                     ephemeral=True,
@@ -2153,6 +2188,26 @@ class FrontlinePassBot(commands.Bot):
                 logging.exception("Failed to add temporary VIP role %s to %s", role_id, member.id)
                 await interaction.response.send_message(
                     "Failed to assign the temporary VIP role due to an unexpected error.",
+                    ephemeral=True,
+                )
+                schedule_ephemeral_cleanup(interaction)
+                return
+
+            usage_result = await self.vip_assign_limiter.try_consume(interaction.user.id)
+            if not usage_result.allowed:
+                try:
+                    await member.remove_roles(
+                        role,
+                        reason="Frontline Pass: revert temporary VIP role after limit race",
+                    )
+                except discord.DiscordException:
+                    logging.exception(
+                        "Assigned VIP role %s to %s but failed to roll it back after usage limit rejection.",
+                        role_id,
+                        member.id,
+                    )
+                await interaction.response.send_message(
+                    "Weekly limit reached - reset each Monday",
                     ephemeral=True,
                 )
                 schedule_ephemeral_cleanup(interaction)
