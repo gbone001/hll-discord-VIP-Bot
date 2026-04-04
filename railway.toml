@@ -6,10 +6,9 @@ dockerfilePath = "Dockerfile"
 numReplicas = 1
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
-startCommand = "python frontline-pass.py"
 
 [[mounts]]
-# Persistent volume for player registrations and metadata
-# This creates/uses a Railway volume named "data" mounted at /data
+# Persistent volume for limiter state and other runtime metadata
+# Set FRONTLINE_STATE_DIR=/data in Railway so the app writes state into this mount.
 source = "data"
 path = "/data"

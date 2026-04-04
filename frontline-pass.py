@@ -278,6 +278,7 @@ class AppConfig:
     channel_id: int
     timezone: pytz.BaseTzInfo
     timezone_name: str
+    state_directory: Path
     announcement_message_id: Optional[int] = None
     quick_vip_channel_id: Optional[int] = None
     quick_vip_announcement_message_id: Optional[int] = None
@@ -571,6 +572,7 @@ def load_config() -> AppConfig:
     raw_config, _ = _load_raw_config()
     config_values = {str(key).upper(): value for key, value in raw_config.items()}
     errors: List[str] = []
+    app_directory = Path(__file__).resolve().parent
 
     config_aliases: Dict[str, Tuple[str, ...]] = {
         "CRCON_HTTP_BASE_URL": ("API_BASE_URL",),
@@ -664,6 +666,7 @@ def load_config() -> AppConfig:
     vip_duration_hours = require_float("VIP_DURATION_HOURS")
     channel_id = require_int("CHANNEL_ID")
     timezone_name = require_str("LOCAL_TIMEZONE")
+    state_directory_raw = get_value("FRONTLINE_STATE_DIR")
 
     if vip_duration_hours is not None and vip_duration_hours <= 0:
         errors.append("VIP_DURATION_HOURS must be greater than zero")
@@ -673,6 +676,13 @@ def load_config() -> AppConfig:
     except pytz.UnknownTimeZoneError:
         errors.append(f"LOCAL_TIMEZONE must be a valid IANA timezone (got {timezone_name!r})")
         timezone = pytz.UTC
+
+    if state_directory_raw is None or str(state_directory_raw).strip() == "":
+        state_directory = app_directory
+    else:
+        state_directory = Path(str(state_directory_raw)).expanduser()
+        if not state_directory.is_absolute():
+            state_directory = (app_directory / state_directory).resolve()
 
     announcement_message_id = optional_int("ANNOUNCEMENT_MESSAGE_ID")
     quick_vip_channel_id = optional_int("QUICK_VIP_CHANNEL_ID")
@@ -741,6 +751,7 @@ def load_config() -> AppConfig:
         channel_id=channel_id,
         timezone=timezone,
         timezone_name=timezone_name,
+        state_directory=state_directory,
         announcement_message_id=announcement_message_id,
         quick_vip_channel_id=quick_vip_channel_id,
         quick_vip_announcement_message_id=quick_vip_announcement_message_id,
@@ -1667,13 +1678,13 @@ class FrontlinePassBot(commands.Bot):
         self.quick_vip_view: Optional[QuickVipView] = None
         self._vip_duration_hours = config.vip_duration_hours
         self._last_grant_utc: Optional[datetime] = None
-        limiter_state_path = Path(__file__).resolve().with_name("vip_assign_usage.json")
+        limiter_state_path = config.state_directory / "vip_assign_usage.json"
         self.vip_assign_limiter = VipAssignLimiter(
             config.timezone,
             default_limit=config.vip_assign_limit,
             storage_path=limiter_state_path,
         )
-        quick_vip_limiter_path = Path(__file__).resolve().with_name("quick_vip_giver_usage.json")
+        quick_vip_limiter_path = config.state_directory / "quick_vip_giver_usage.json"
         self.quick_vip_giver_limiter = RollingWindowLimiter(
             window=timedelta(hours=24),
             default_limit=QUICK_VIP_GIVER_LIMIT_PER_24H,

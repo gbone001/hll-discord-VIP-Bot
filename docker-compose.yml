@@ -1,0 +1,16 @@
+services:
+  frontline-pass:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: frontline-pass
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      FRONTLINE_STATE_DIR: /data
+    volumes:
+      - frontline-pass-data:/data
+
+volumes:
+  frontline-pass-data:

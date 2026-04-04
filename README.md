@@ -35,6 +35,36 @@ Configure `config.jsonc`, then start the bot:
 python frontline-pass.py
 ```
 
+## Docker Deployment
+
+The repository supports a Docker-first workflow for isolated testing and deployment.
+
+1. Copy `.env.dist` to `.env`.
+2. Fill in the required values in `.env`.
+3. Start the container:
+
+```bash
+docker compose up --build -d
+```
+
+4. Follow logs while testing:
+
+```bash
+docker compose logs -f
+```
+
+5. Stop the container when finished:
+
+```bash
+docker compose down
+```
+
+Notes:
+
+- `docker-compose.yml` mounts a named volume at `/data` and sets `FRONTLINE_STATE_DIR=/data` so limiter state survives container restarts.
+- The default container workflow is environment-driven. If you prefer file-based configuration, mount your config file into the container and set `FRONTLINE_CONFIG_PATH` accordingly.
+- The image runs as a non-root user.
+
 ## Persistent systemd service
 
 The repo ships with a systemd template and helper script so the bot restarts automatically after crashes or reboots.
@@ -72,6 +102,7 @@ All primary settings live in `config.jsonc` (JSON5 syntax). Environment variable
 | `MODERATOR_ROLE_ID` | Optional | Discord role ID treated as moderator for privileged commands such as `/assignvip`, `/set_vip_duration`, and `/game_server_message`. |
 | `VIP_TEMP_ROLE_ID`, `VIP_CLAIM_CHANNEL_ID` | Optional | Used by `/assignvip`. `VIP_TEMP_ROLE_ID` is a temporary Discord role that grants access to your VIP claim channel. `VIP_CLAIM_CHANNEL_ID` is the channel ID where the control panel lives (falls back to `CHANNEL_ID` if unset). |
 | `VIP_ASSIGN_LIMIT` | Optional | Weekly per-moderator cap for `/assignvip`. Defaults to `5` uses and resets every Monday at 01:00 in `LOCAL_TIMEZONE`. |
+| `FRONTLINE_STATE_DIR` | Optional | Directory used for runtime state such as limiter JSON files. Defaults to the app directory locally; set to a mounted path such as `/data` in containers. |
 | `COMMAND_GUILD_IDS` / `COMMAND_GUILD_ID` | Optional | Comma-separated guild IDs (or a single ID) to sync slash commands instantly to those servers. If unset, commands are synced globally (may take up to ~1 hour to propagate). |
 | `CRCON_HTTP_BASE_URL` | Yes | CRCON host (omit `/api`; the bot appends it automatically). |
 | `CRCON_HTTP_BEARER_TOKEN` | Yes\* | Pre-generated CRCON token. Required unless you supply username/password. |
@@ -153,7 +184,8 @@ Required CRCON API permissions for the bot account:
 ## Deployment Notes
 
 - **Local / bare metal** - run `python frontline-pass.py` under your favorite supervisor (systemd, pm2, tmux).
-- **Railway** - the repo ships with `Procfile`, `railway.toml`, and a Dockerfile. Railway builds with the Dockerfile (set in `railway.toml`) and runs `python frontline-pass.py`. Set the required variables (see `.env.dist`) in the Railway dashboard/CLI before deploying—at minimum `DISCORD_TOKEN`, `VIP_DURATION_HOURS`, `CHANNEL_ID`, `LOCAL_TIMEZONE`, `CRCON_HTTP_BASE_URL`, and either `CRCON_HTTP_BEARER_TOKEN` or (`CRCON_HTTP_USERNAME` + `CRCON_HTTP_PASSWORD`).
+- **Docker / Compose** - use `docker compose up --build -d` with a populated `.env`. The compose stack persists runtime state in a named Docker volume mounted at `/data`.
+- **Railway** - the repo ships with `railway.toml` and a Dockerfile. Railway builds from the Dockerfile, so the image `CMD` is the runtime entrypoint. Set the required variables (see `.env.dist`) in the Railway dashboard/CLI before deploying—at minimum `DISCORD_TOKEN`, `VIP_DURATION_HOURS`, `CHANNEL_ID`, `LOCAL_TIMEZONE`, `CRCON_HTTP_BASE_URL`, and either `CRCON_HTTP_BEARER_TOKEN` or (`CRCON_HTTP_USERNAME` + `CRCON_HTTP_PASSWORD`). Also set `FRONTLINE_STATE_DIR=/data` if you want the mounted Railway volume to persist limiter state across restarts.
 
 ## Quick Troubleshooting Checklist
 
