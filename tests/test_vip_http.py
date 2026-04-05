@@ -26,7 +26,9 @@ RollingWindowLimiter = frontline_pass.RollingWindowLimiter
 FrontlinePassBot = frontline_pass.FrontlinePassBot
 QuickVipView = frontline_pass.QuickVipView
 PlayerVipStatus = frontline_pass.PlayerVipStatus
-QUICK_VIP_GIVER_ROLE_NAMES = frontline_pass.QUICK_VIP_GIVER_ROLE_NAMES
+QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS = frontline_pass.QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS
+LEGACY_QUICK_VIP_GIVER_ROLE_NAMES = frontline_pass.LEGACY_QUICK_VIP_GIVER_ROLE_NAMES
+LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW = frontline_pass.LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW
 
 
 class DummyResponse:
@@ -397,6 +399,7 @@ class VipServiceTests(unittest.TestCase):
             channel_id=1,
             timezone=pytz.UTC,
             timezone_name="UTC",
+            state_directory=pathlib.Path("."),
             http_credentials=HttpCredentials(
                 base_url="https://example",
                 bearer_token="abc123",
@@ -657,11 +660,13 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
             channel_id=1,
             timezone=pytz.UTC,
             timezone_name="UTC",
+            state_directory=pathlib.Path(self.tempdir.name),
             http_credentials=HttpCredentials(
                 base_url="https://example",
                 bearer_token="abc123",
             ),
             vip_assign_limit=2,
+            quick_vip_role_ids=(99,),
         )
 
     async def _cleanup_tempdir(self) -> None:
@@ -674,9 +679,11 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
             channel_id=self.base_config.channel_id,
             timezone=self.base_config.timezone,
             timezone_name=self.base_config.timezone_name,
+            state_directory=self.base_config.state_directory,
             http_credentials=self.base_config.http_credentials,
             vip_assign_limit=self.base_config.vip_assign_limit,
             vip_temp_role_id=vip_temp_role_id,
+            quick_vip_role_ids=self.base_config.quick_vip_role_ids,
         )
         bot = FrontlinePassBot(config, mock.Mock())
         bot.vip_assign_limiter = frontline_pass.VipAssignLimiter(
@@ -685,9 +692,9 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
             storage_path=pathlib.Path(self.tempdir.name) / "vip_assign_usage.json",
         )
         bot.quick_vip_giver_limiter = RollingWindowLimiter(
-            window=timedelta(hours=24),
+            window=timedelta(hours=QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS),
             default_limit=1,
-            storage_path=pathlib.Path(self.tempdir.name) / "quick_vip_usage.json",
+            storage_path=pathlib.Path(self.tempdir.name) / "quick_vip_role_usage.json",
         )
         await bot._register_commands()
         self.addAsyncCleanup(bot.close)
@@ -738,11 +745,10 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_quick_vip_failure_does_not_consume_usage(self) -> None:
         bot = await self._build_bot()
-        quick_vip_role_name = next(iter(QUICK_VIP_GIVER_ROLE_NAMES))
         quick_vip_user = DummyMember(
             9,
             "QuickVIP",
-            roles=[DummyRole(99, quick_vip_role_name)],
+            roles=[DummyRole(99, "Quick VIP")],
         )
         interaction = DummyInteraction(user=quick_vip_user, guild=DummyGuild())
         vip_service = mock.Mock()
@@ -755,6 +761,83 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
         usage = await bot.quick_vip_giver_limiter.get_usage(quick_vip_user.id)
         self.assertTrue(usage.allowed)
         self.assertEqual(usage.used, 0)
+
+    async def test_quick_vip_rejects_user_without_nominated_role(self) -> None:
+        bot = await self._build_bot()
+        interaction = DummyInteraction(user=DummyMember(10, "NotAllowed"), guild=DummyGuild())
+        vip_service = mock.Mock()
+        view = QuickVipView(bot, bot.config, vip_service)
+
+        with mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"):
+            await view.handle_modal_submission(interaction, "2805d5bbe14b6ec432f82e5cb859d012")
+
+        self.assertEqual(len(interaction.response.messages), 1)
+        self.assertIn("approved Quick VIP role", interaction.response.messages[0][0])
+        self.assertFalse(vip_service.grant_fixed_vip.called)
+
+    async def test_quick_vip_blocks_second_use_within_48_hours(self) -> None:
+        bot = await self._build_bot()
+        quick_vip_user = DummyMember(
+            11,
+            "QuickVIP",
+            roles=[DummyRole(99, "Quick VIP")],
+        )
+        interaction = DummyInteraction(user=quick_vip_user, guild=DummyGuild())
+        vip_service = mock.Mock()
+        vip_service.grant_fixed_vip.return_value = mock.Mock(
+            expiration_local=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            expiration_utc=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            status_lines=["VIP set"],
+        )
+        view = QuickVipView(bot, bot.config, vip_service)
+
+        with (
+            mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"),
+            mock.patch.object(bot, "refresh_quick_vip_announcement_message", new=mock.AsyncMock()),
+            mock.patch.object(bot, "record_vip_grant"),
+            mock.patch.object(frontline_pass.asyncio, "to_thread", new=mock.AsyncMock(side_effect=vip_service.grant_fixed_vip)),
+        ):
+            await view.handle_modal_submission(interaction, "2805d5bbe14b6ec432f82e5cb859d012")
+
+        second_interaction = DummyInteraction(user=quick_vip_user, guild=DummyGuild())
+        with mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"):
+            await view.handle_modal_submission(second_interaction, "2805d5bbe14b6ec432f82e5cb859d012")
+
+        self.assertEqual(len(second_interaction.response.messages), 1)
+        self.assertIn("48 hours", second_interaction.response.messages[0][0])
+
+    async def test_legacy_quick_vip_role_keeps_five_per_24_hours(self) -> None:
+        bot = await self._build_bot()
+        legacy_role_name = next(iter(LEGACY_QUICK_VIP_GIVER_ROLE_NAMES))
+        quick_vip_user = DummyMember(
+            12,
+            "LegacyQuickVIP",
+            roles=[DummyRole(100, legacy_role_name)],
+        )
+        vip_service = mock.Mock()
+        vip_service.grant_fixed_vip.return_value = mock.Mock(
+            expiration_local=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            expiration_utc=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            status_lines=["VIP set"],
+        )
+        view = QuickVipView(bot, bot.config, vip_service)
+
+        with (
+            mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"),
+            mock.patch.object(bot, "refresh_quick_vip_announcement_message", new=mock.AsyncMock()),
+            mock.patch.object(bot, "record_vip_grant"),
+            mock.patch.object(frontline_pass.asyncio, "to_thread", new=mock.AsyncMock(side_effect=vip_service.grant_fixed_vip)),
+        ):
+            for _ in range(LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW):
+                interaction = DummyInteraction(user=quick_vip_user, guild=DummyGuild())
+                await view.handle_modal_submission(interaction, "2805d5bbe14b6ec432f82e5cb859d012")
+
+        blocked_interaction = DummyInteraction(user=quick_vip_user, guild=DummyGuild())
+        with mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"):
+            await view.handle_modal_submission(blocked_interaction, "2805d5bbe14b6ec432f82e5cb859d012")
+
+        self.assertEqual(len(blocked_interaction.response.messages), 1)
+        self.assertIn("5 grants per 24 hours", blocked_interaction.response.messages[0][0])
 
 
 if __name__ == "__main__":
