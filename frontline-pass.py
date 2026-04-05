@@ -30,7 +30,7 @@ logging.basicConfig(level=logging.INFO)
 ANNOUNCEMENT_TITLE = "VIP Control Center"
 QUICK_VIP_ANNOUNCEMENT_TITLE = "Quick VIP Control Center"
 QUICK_VIP_DURATION_MINUTES = 10
-QUICK_VIP_GIVER_ROLE_NAMES = {
+LEGACY_QUICK_VIP_GIVER_ROLE_NAMES = {
     "MSU-Quick-VIP-Giver",
     "ROFS-Quick-VIP-Giver",
     "SCH-Quick-VIP-Giver",
@@ -38,7 +38,10 @@ QUICK_VIP_GIVER_ROLE_NAMES = {
     "TFMC-Quick-VIP-Giver",
     "LGN-Quick-VIP-Giver",
 }
-QUICK_VIP_GIVER_LIMIT_PER_24H = 5
+LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW = 5
+LEGACY_QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS = 24
+QUICK_VIP_GIVER_LIMIT_PER_WINDOW = 1
+QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS = 48
 PLAYER_ID_PLACEHOLDER = (
     "Go to https://hllrecords.com/, get your player_id (e.g. 2805d5bbe14b6ec432f82e5cb859d012)."
 )
@@ -88,6 +91,7 @@ def build_quick_vip_announcement_embed(
 ) -> discord.Embed:
     description_lines = [
         "Use the button below to grant a fixed 10-minute VIP window.",
+        "Eligible users need either a legacy clan Quick VIP role or a nominated Quick VIP role.",
         "Paste the target player's player_id from https://hllrecords.com when prompted.",
         "This does not extend existing VIP. It sets the target to 10 minutes from now.",
     ]
@@ -98,8 +102,18 @@ def build_quick_vip_announcement_embed(
         timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="Duration", value=f"{QUICK_VIP_DURATION_MINUTES} minutes", inline=True)
+    embed.add_field(
+        name="Nominated Roles",
+        value=f"{QUICK_VIP_GIVER_LIMIT_PER_WINDOW} use per {QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS} hours",
+        inline=True,
+    )
+    embed.add_field(
+        name="Legacy Clan Roles",
+        value=f"{LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW} uses per {LEGACY_QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS} hours",
+        inline=True,
+    )
     embed.add_field(name="Local Timezone", value=config.timezone_name, inline=True)
-    embed.set_footer(text="Channel access controls who can use Quick VIP.")
+    embed.set_footer(text="Eligibility is controlled by legacy clan roles or nominated Discord roles.")
     return embed
 
 
@@ -282,6 +296,7 @@ class AppConfig:
     announcement_message_id: Optional[int] = None
     quick_vip_channel_id: Optional[int] = None
     quick_vip_announcement_message_id: Optional[int] = None
+    quick_vip_role_ids: Tuple[int, ...] = ()
     http_credentials: Optional[HttpCredentials] = None
     moderator_role_id: Optional[int] = None
     vip_temp_role_id: Optional[int] = None
@@ -306,6 +321,15 @@ class RollingWindowUsageResult:
     used: int
     limit: int
     next_available_at: Optional[datetime] = None
+
+
+@dataclass(frozen=True)
+class QuickVipEligibility:
+    allowed: bool
+    limiter: Optional["RollingWindowLimiter"] = None
+    policy_name: str = ""
+    limit: int = 0
+    window_hours: int = 0
 
 
 class RollingWindowLimiter:
@@ -641,6 +665,34 @@ def load_config() -> AppConfig:
             errors.append(f"{name} must be an integer (got {value!r})")
             return None
 
+    def optional_int_list(name: str) -> Tuple[int, ...]:
+        value = get_value(name)
+        if value is None:
+            return ()
+
+        items: List[Any]
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return ()
+            items = [part.strip() for part in stripped.split(",")]
+        elif isinstance(value, (list, tuple, set)):
+            items = list(value)
+        else:
+            errors.append(f"{name} must be a comma-separated string or list of integers")
+            return ()
+
+        parsed_values: List[int] = []
+        for item in items:
+            if item is None or str(item).strip() == "":
+                continue
+            try:
+                parsed_values.append(int(str(item).strip()))
+            except (TypeError, ValueError):
+                errors.append(f"{name} contains a non-integer value ({item!r})")
+                return ()
+        return tuple(parsed_values)
+
     def optional_float(name: str, default: Optional[float] = None) -> Optional[float]:
         value = get_value(name)
         if value is None or str(value).strip() == "":
@@ -683,10 +735,18 @@ def load_config() -> AppConfig:
         state_directory = Path(str(state_directory_raw)).expanduser()
         if not state_directory.is_absolute():
             state_directory = (app_directory / state_directory).resolve()
+    try:
+        state_directory.mkdir(parents=True, exist_ok=True)
+        probe_path = state_directory / ".frontline-state-write-test"
+        probe_path.write_text("ok", encoding="utf-8")
+        probe_path.unlink()
+    except Exception as exc:
+        errors.append(f"FRONTLINE_STATE_DIR must be writable (resolved to {state_directory}): {exc}")
 
     announcement_message_id = optional_int("ANNOUNCEMENT_MESSAGE_ID")
     quick_vip_channel_id = optional_int("QUICK_VIP_CHANNEL_ID")
     quick_vip_announcement_message_id = optional_int("QUICK_VIP_ANNOUNCEMENT_MESSAGE_ID")
+    quick_vip_role_ids = optional_int_list("QUICK_VIP_ROLE_IDS")
     moderator_role_id = optional_int("MODERATOR_ROLE_ID")
     vip_temp_role_id = optional_int("VIP_TEMP_ROLE_ID")
     vip_claim_channel_id = optional_int("VIP_CLAIM_CHANNEL_ID")
@@ -697,7 +757,6 @@ def load_config() -> AppConfig:
         vip_assign_limit = vip_assign_limit_raw
     if vip_assign_limit <= 0:
         errors.append("VIP_ASSIGN_LIMIT must be greater than zero")
-
     http_base_url_raw = get_value("CRCON_HTTP_BASE_URL")
     http_bearer_token = get_value("CRCON_HTTP_BEARER_TOKEN")
     http_username = get_value("CRCON_HTTP_USERNAME")
@@ -755,6 +814,7 @@ def load_config() -> AppConfig:
         announcement_message_id=announcement_message_id,
         quick_vip_channel_id=quick_vip_channel_id,
         quick_vip_announcement_message_id=quick_vip_announcement_message_id,
+        quick_vip_role_ids=quick_vip_role_ids,
         http_credentials=http_credentials,
         moderator_role_id=moderator_role_id,
         vip_temp_role_id=vip_temp_role_id,
@@ -1572,26 +1632,43 @@ class QuickVipView(PersistentView):
             schedule_ephemeral_cleanup(interaction)
             return
 
-        member = interaction.user if isinstance(interaction.user, discord.Member) else None
-        if member is not None and self.bot.user_has_any_role_named(member, QUICK_VIP_GIVER_ROLE_NAMES):
-            usage = await self.bot.quick_vip_giver_limiter.get_usage(member.id)
-            if not usage.allowed:
-                next_at = usage.next_available_at
-                if next_at is not None:
-                    next_at_unix = int(next_at.timestamp())
-                    message = (
-                        f"Quick VIP limit reached: {usage.limit} grants per 24 hours for approved "
-                        "Quick VIP Giver roles.\n"
-                        f"Try again <t:{next_at_unix}:R>."
-                    )
-                else:
-                    message = (
-                        f"Quick VIP limit reached: {usage.limit} grants per 24 hours for approved "
-                        "Quick VIP Giver roles."
-                    )
-                await interaction.response.send_message(message, ephemeral=True)
-                schedule_ephemeral_cleanup(interaction)
-                return
+        member = interaction.user if hasattr(interaction.user, "roles") else None
+        if member is None:
+            await interaction.response.send_message(
+                "Quick VIP can only be used by a server member with an approved Quick VIP role.",
+                ephemeral=True,
+            )
+            schedule_ephemeral_cleanup(interaction)
+            return
+        eligibility = self.bot.get_quick_vip_eligibility(member)
+        if not eligibility.allowed or eligibility.limiter is None:
+            await interaction.response.send_message(
+                "You do not have an approved Quick VIP role, so this control is unavailable to you.",
+                ephemeral=True,
+            )
+            schedule_ephemeral_cleanup(interaction)
+            return
+
+        usage = await eligibility.limiter.get_usage(member.id)
+        if not usage.allowed:
+            next_at = usage.next_available_at
+            if next_at is not None:
+                next_at_unix = int(next_at.timestamp())
+                message = (
+                    f"Quick VIP limit reached: {eligibility.limit} "
+                    f"{'grant' if eligibility.limit == 1 else 'grants'} per {eligibility.window_hours} "
+                    f"hours for {eligibility.policy_name}.\n"
+                    f"Try again <t:{next_at_unix}:R>."
+                )
+            else:
+                message = (
+                    f"Quick VIP limit reached: {eligibility.limit} "
+                    f"{'grant' if eligibility.limit == 1 else 'grants'} per {eligibility.window_hours} "
+                    f"hours for {eligibility.policy_name}."
+                )
+            await interaction.response.send_message(message, ephemeral=True)
+            schedule_ephemeral_cleanup(interaction)
+            return
 
         await interaction.response.defer(ephemeral=True)
         try:
@@ -1628,14 +1705,14 @@ class QuickVipView(PersistentView):
             result.expiration_utc.strftime("%Y-%m-%d %H:%M:%S"),
             "; ".join(result.status_lines),
         )
-        if member is not None and self.bot.user_has_any_role_named(member, QUICK_VIP_GIVER_ROLE_NAMES):
-            usage = await self.bot.quick_vip_giver_limiter.try_consume(member.id)
-            if not usage.allowed:
-                logging.warning(
-                    "Quick VIP grant for %s succeeded but usage recording was rejected due to a concurrent limit check for user %s.",
-                    player_id,
-                    member.id,
-                )
+        usage = await eligibility.limiter.try_consume(member.id)
+        if not usage.allowed:
+            logging.warning(
+                "Quick VIP grant for %s succeeded but usage recording was rejected due to a concurrent limit check for user %s under policy %s.",
+                player_id,
+                member.id,
+                eligibility.policy_name,
+            )
         self.bot.record_vip_grant(datetime.now(timezone.utc))
         await self.bot.refresh_quick_vip_announcement_message()
 
@@ -1684,11 +1761,17 @@ class FrontlinePassBot(commands.Bot):
             default_limit=config.vip_assign_limit,
             storage_path=limiter_state_path,
         )
-        quick_vip_limiter_path = config.state_directory / "quick_vip_giver_usage.json"
+        quick_vip_limiter_path = config.state_directory / "quick_vip_role_usage.json"
         self.quick_vip_giver_limiter = RollingWindowLimiter(
-            window=timedelta(hours=24),
-            default_limit=QUICK_VIP_GIVER_LIMIT_PER_24H,
+            window=timedelta(hours=QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS),
+            default_limit=QUICK_VIP_GIVER_LIMIT_PER_WINDOW,
             storage_path=quick_vip_limiter_path,
+        )
+        legacy_quick_vip_limiter_path = config.state_directory / "quick_vip_legacy_role_usage.json"
+        self.legacy_quick_vip_giver_limiter = RollingWindowLimiter(
+            window=timedelta(hours=LEGACY_QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS),
+            default_limit=LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW,
+            storage_path=legacy_quick_vip_limiter_path,
         )
 
     @property
@@ -1773,6 +1856,19 @@ class FrontlinePassBot(commands.Bot):
         return False
 
     @staticmethod
+    def user_has_any_role_id(user: discord.abc.User, role_ids: Tuple[int, ...]) -> bool:
+        if not hasattr(user, "roles"):
+            return False
+        targets = {int(role_id) for role_id in role_ids}
+        if not targets:
+            return False
+        for role in getattr(user, "roles", []):
+            role_id = getattr(role, "id", None)
+            if isinstance(role_id, int) and role_id in targets:
+                return True
+        return False
+
+    @staticmethod
     def user_has_any_role_named(user: discord.abc.User, role_names: set[str]) -> bool:
         if not hasattr(user, "roles"):
             return False
@@ -1784,6 +1880,25 @@ class FrontlinePassBot(commands.Bot):
             if isinstance(name, str) and name.strip().lower() in targets:
                 return True
         return False
+
+    def get_quick_vip_eligibility(self, user: discord.abc.User) -> QuickVipEligibility:
+        if self.user_has_any_role_named(user, LEGACY_QUICK_VIP_GIVER_ROLE_NAMES):
+            return QuickVipEligibility(
+                allowed=True,
+                limiter=self.legacy_quick_vip_giver_limiter,
+                policy_name="legacy clan Quick VIP roles",
+                limit=LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW,
+                window_hours=LEGACY_QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS,
+            )
+        if self.user_has_any_role_id(user, self.config.quick_vip_role_ids):
+            return QuickVipEligibility(
+                allowed=True,
+                limiter=self.quick_vip_giver_limiter,
+                policy_name="nominated Quick VIP roles",
+                limit=QUICK_VIP_GIVER_LIMIT_PER_WINDOW,
+                window_hours=QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS,
+            )
+        return QuickVipEligibility(allowed=False)
 
     async def set_vip_duration_hours(self, hours: float) -> None:
         self._vip_duration_hours = hours
