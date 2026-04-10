@@ -1317,11 +1317,8 @@ class VipService:
 
     @staticmethod
     def _extract_latest_vip_expiration(profile: Dict[str, Any]) -> Optional[datetime]:
-        vips = profile.get("vips") if isinstance(profile, dict) else None
-        if not isinstance(vips, list):
-            return None
         latest: Optional[datetime] = None
-        for entry in vips:
+        for entry in VipService._iter_vip_entries(profile):
             if not isinstance(entry, dict):
                 continue
             expiration_str = entry.get("expiration")
@@ -1332,6 +1329,45 @@ class VipService:
             if latest is None or expiration_utc > latest:
                 latest = expiration_utc
         return latest
+
+    @staticmethod
+    def _iter_vip_entries(profile: Any) -> List[Dict[str, Any]]:
+        if not isinstance(profile, dict):
+            return []
+
+        vip_entries: List[Dict[str, Any]] = []
+        candidate_keys = (
+            "vips",
+            "vip",
+            "player_vip",
+            "active_vip",
+            "current_vip",
+        )
+        nested_container_keys = (
+            "player",
+            "profile",
+            "player_profile",
+            "result",
+            "data",
+        )
+
+        for key in candidate_keys:
+            vip_entries.extend(VipService._normalize_vip_entries(profile.get(key)))
+
+        for key in nested_container_keys:
+            nested_value = profile.get(key)
+            if isinstance(nested_value, dict):
+                vip_entries.extend(VipService._iter_vip_entries(nested_value))
+
+        return vip_entries
+
+    @staticmethod
+    def _normalize_vip_entries(value: Any) -> List[Dict[str, Any]]:
+        if isinstance(value, dict):
+            return [value]
+        if isinstance(value, list):
+            return [entry for entry in value if isinstance(entry, dict)]
+        return []
 
     @staticmethod
     def _parse_iso_datetime(value: Any) -> Optional[datetime]:

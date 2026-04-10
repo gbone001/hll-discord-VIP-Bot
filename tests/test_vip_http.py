@@ -511,6 +511,34 @@ class VipServiceTests(unittest.TestCase):
             expected_expiration.isoformat(),
         )
 
+    def test_grant_vip_extends_nested_player_vip_expiration(self) -> None:
+        service = VipService(self.config)
+        fake_http_client = mock.Mock()
+        fake_http_client.get_player_profile.return_value = {
+            "player": {
+                "player_vip": {
+                    "expiration": "2031-01-01T00:00:00+00:00",
+                }
+            }
+        }
+        fake_http_client.add_vip.return_value = {"result": "ok"}
+        service._http_client = fake_http_client  # type: ignore[attr-defined]
+        service._now_utc = mock.Mock(return_value=datetime(2030, 6, 1, tzinfo=timezone.utc))  # type: ignore[attr-defined]
+
+        result = service.grant_vip(
+            "steam123",
+            duration_hours=72,
+            local_timezone=pytz.UTC,
+            requester_display_name="GBONE",
+        )
+
+        expected_expiration = datetime.fromisoformat("2031-01-01T00:00:00+00:00") + timedelta(hours=72)
+        self.assertEqual(result.expiration_utc, expected_expiration)
+        self.assertEqual(
+            fake_http_client.add_vip.call_args[0][2],
+            expected_expiration.isoformat(),
+        )
+
     def test_get_player_vip_status_returns_expiration(self) -> None:
         service = VipService(self.config)
         fake_http_client = mock.Mock()
@@ -526,6 +554,23 @@ class VipServiceTests(unittest.TestCase):
         self.assertEqual(status.player_id, "steam123")
         self.assertEqual(status.expiration_utc, datetime.fromisoformat("2032-05-01T10:00:00+00:00"))
         fake_http_client.get_player_profile.assert_called_once_with("steam123", num_sessions=10)
+
+    def test_get_player_vip_status_reads_nested_vip_shape(self) -> None:
+        service = VipService(self.config)
+        fake_http_client = mock.Mock()
+        fake_http_client.get_player_profile.return_value = {
+            "profile": {
+                "current_vip": {
+                    "expiration": "2032-05-01T10:00:00+00:00",
+                }
+            }
+        }
+        service._http_client = fake_http_client  # type: ignore[attr-defined]
+
+        status = service.get_player_vip_status("steam123")
+
+        self.assertEqual(status.player_id, "steam123")
+        self.assertEqual(status.expiration_utc, datetime.fromisoformat("2032-05-01T10:00:00+00:00"))
 
     def test_get_player_vip_status_handles_missing_entries(self) -> None:
         service = VipService(self.config)
