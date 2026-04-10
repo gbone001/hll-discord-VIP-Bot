@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import pathlib
 import tempfile
 import unittest
@@ -665,6 +666,7 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
                 base_url="https://example",
                 bearer_token="abc123",
             ),
+            moderator_role_id=555,
             vip_assign_limit=2,
             quick_vip_role_ids=(99,),
         )
@@ -838,6 +840,91 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(blocked_interaction.response.messages), 1)
         self.assertIn("5 grants per 24 hours", blocked_interaction.response.messages[0][0])
+
+    async def test_moderator_role_has_unlimited_quick_vip(self) -> None:
+        bot = await self._build_bot()
+        moderator_user = DummyMember(
+            13,
+            "ModeratorQuickVIP",
+            roles=[DummyRole(555, "Moderator")],
+        )
+
+        eligibility = bot.get_quick_vip_eligibility(moderator_user)
+
+        self.assertTrue(eligibility.allowed)
+        self.assertTrue(eligibility.unlimited)
+        self.assertIsNone(eligibility.limiter)
+        self.assertEqual(eligibility.policy_name, "moderator role")
+
+    async def test_moderator_role_quick_vip_does_not_consume_limiter_usage(self) -> None:
+        bot = await self._build_bot()
+        moderator_user = DummyMember(
+            14,
+            "ModeratorQuickVIP",
+            roles=[DummyRole(555, "Moderator")],
+        )
+        interaction = DummyInteraction(user=moderator_user, guild=DummyGuild())
+        vip_service = mock.Mock()
+        vip_service.grant_fixed_vip.return_value = mock.Mock(
+            expiration_local=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            expiration_utc=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            status_lines=["VIP set"],
+        )
+        view = QuickVipView(bot, bot.config, vip_service)
+
+        with (
+            mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"),
+            mock.patch.object(bot, "refresh_quick_vip_announcement_message", new=mock.AsyncMock()),
+            mock.patch.object(bot, "record_vip_grant"),
+            mock.patch.object(frontline_pass.asyncio, "to_thread", new=mock.AsyncMock(side_effect=vip_service.grant_fixed_vip)),
+        ):
+            await view.handle_modal_submission(interaction, "2805d5bbe14b6ec432f82e5cb859d012")
+
+        nominated_usage = await bot.quick_vip_giver_limiter.get_usage(moderator_user.id)
+        legacy_usage = await bot.legacy_quick_vip_giver_limiter.get_usage(moderator_user.id)
+        self.assertEqual(nominated_usage.used, 0)
+        self.assertEqual(legacy_usage.used, 0)
+
+
+class LoadConfigTests(unittest.TestCase):
+    def test_load_config_uses_app_directory_when_no_state_dir_is_configured(self) -> None:
+        original_file = frontline_pass.__file__
+        temp_root = pathlib.Path(tempfile.mkdtemp())
+        fake_module_path = temp_root / "frontline-pass.py"
+        fake_module_path.write_text("# test module marker\n", encoding="utf-8")
+
+        required_env = {
+            "DISCORD_TOKEN": "token",
+            "CHANNEL_ID": "123",
+            "VIP_DURATION_HOURS": "72",
+            "LOCAL_TIMEZONE": "Australia/Sydney",
+            "CRCON_HTTP_BASE_URL": "https://example.com",
+            "CRCON_HTTP_BEARER_TOKEN": "bearer-token",
+        }
+        removed_env = {
+            "FRONTLINE_STATE_DIR": os.environ.get("FRONTLINE_STATE_DIR"),
+            "FRONTLINE_CONFIG_PATH": os.environ.get("FRONTLINE_CONFIG_PATH"),
+        }
+
+        try:
+            frontline_pass.__file__ = str(fake_module_path)
+            for key, value in required_env.items():
+                os.environ[key] = value
+            for key in removed_env:
+                os.environ.pop(key, None)
+
+            config = frontline_pass.load_config()
+
+            self.assertEqual(config.state_directory, temp_root)
+        finally:
+            frontline_pass.__file__ = original_file
+            for key in required_env:
+                os.environ.pop(key, None)
+            for key, value in removed_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 if __name__ == "__main__":

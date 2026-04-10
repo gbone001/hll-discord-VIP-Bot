@@ -91,7 +91,7 @@ def build_quick_vip_announcement_embed(
 ) -> discord.Embed:
     description_lines = [
         "Use the button below to grant a fixed 10-minute VIP window.",
-        "Eligible users need either a legacy clan Quick VIP role or a nominated Quick VIP role.",
+        "Eligible users need either a legacy clan Quick VIP role, the configured moderator role, or a nominated Quick VIP role.",
         "Paste the target player's player_id from https://hllrecords.com when prompted.",
         "This does not extend existing VIP. It sets the target to 10 minutes from now.",
     ]
@@ -108,12 +108,12 @@ def build_quick_vip_announcement_embed(
         inline=True,
     )
     embed.add_field(
-        name="Legacy Clan Roles",
-        value=f"{LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW} uses per {LEGACY_QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS} hours",
+        name="Legacy Clan / Moderator Role",
+        value="Legacy clan roles: 5 uses per 24 hours\nModerator role: unlimited",
         inline=True,
     )
     embed.add_field(name="Local Timezone", value=config.timezone_name, inline=True)
-    embed.set_footer(text="Eligibility is controlled by legacy clan roles or nominated Discord roles.")
+    embed.set_footer(text="Eligibility is controlled by legacy clan roles, the moderator role, or nominated Discord roles.")
     return embed
 
 
@@ -330,6 +330,7 @@ class QuickVipEligibility:
     policy_name: str = ""
     limit: int = 0
     window_hours: int = 0
+    unlimited: bool = False
 
 
 class RollingWindowLimiter:
@@ -593,6 +594,7 @@ class VipAssignLimiter:
 
 def load_config() -> AppConfig:
     load_dotenv()
+    app_directory = Path(__file__).resolve().parent
     raw_config, _ = _load_raw_config()
     config_values = {str(key).upper(): value for key, value in raw_config.items()}
     errors: List[str] = []
@@ -1639,7 +1641,7 @@ class QuickVipView(PersistentView):
             schedule_ephemeral_cleanup(interaction)
             return
         eligibility = self.bot.get_quick_vip_eligibility(member)
-        if not eligibility.allowed or eligibility.limiter is None:
+        if not eligibility.allowed:
             await interaction.response.send_message(
                 "You do not have an approved Quick VIP role, so this control is unavailable to you.",
                 ephemeral=True,
@@ -1647,8 +1649,19 @@ class QuickVipView(PersistentView):
             schedule_ephemeral_cleanup(interaction)
             return
 
-        usage = await eligibility.limiter.get_usage(member.id)
-        if not usage.allowed:
+        if eligibility.unlimited:
+            usage = None
+        elif eligibility.limiter is not None:
+            usage = await eligibility.limiter.get_usage(member.id)
+        else:
+            await interaction.response.send_message(
+                "Quick VIP is misconfigured for your role policy. Ask an admin to check the bot configuration.",
+                ephemeral=True,
+            )
+            schedule_ephemeral_cleanup(interaction)
+            return
+
+        if usage is not None and not usage.allowed:
             next_at = usage.next_available_at
             if next_at is not None:
                 next_at_unix = int(next_at.timestamp())
@@ -1703,14 +1716,15 @@ class QuickVipView(PersistentView):
             result.expiration_utc.strftime("%Y-%m-%d %H:%M:%S"),
             "; ".join(result.status_lines),
         )
-        usage = await eligibility.limiter.try_consume(member.id)
-        if not usage.allowed:
-            logging.warning(
-                "Quick VIP grant for %s succeeded but usage recording was rejected due to a concurrent limit check for user %s under policy %s.",
-                player_id,
-                member.id,
-                eligibility.policy_name,
-            )
+        if not eligibility.unlimited and eligibility.limiter is not None:
+            usage = await eligibility.limiter.try_consume(member.id)
+            if not usage.allowed:
+                logging.warning(
+                    "Quick VIP grant for %s succeeded but usage recording was rejected due to a concurrent limit check for user %s under policy %s.",
+                    player_id,
+                    member.id,
+                    eligibility.policy_name,
+                )
         self.bot.record_vip_grant(datetime.now(timezone.utc))
         await self.bot.refresh_quick_vip_announcement_message()
 
@@ -1879,8 +1893,25 @@ class FrontlinePassBot(commands.Bot):
                 return True
         return False
 
-    def get_quick_vip_eligibility(self, user: discord.abc.User) -> QuickVipEligibility:
+    def user_has_legacy_quick_vip_role(self, user: discord.abc.User) -> bool:
         if self.user_has_any_role_named(user, LEGACY_QUICK_VIP_GIVER_ROLE_NAMES):
+            return True
+        return False
+
+    def user_has_moderator_role(self, user: discord.abc.User) -> bool:
+        moderator_role_id = self.config.moderator_role_id
+        if moderator_role_id is None:
+            return False
+        return self.user_has_any_role_id(user, (moderator_role_id,))
+
+    def get_quick_vip_eligibility(self, user: discord.abc.User) -> QuickVipEligibility:
+        if self.user_has_moderator_role(user):
+            return QuickVipEligibility(
+                allowed=True,
+                policy_name="moderator role",
+                unlimited=True,
+            )
+        if self.user_has_legacy_quick_vip_role(user):
             return QuickVipEligibility(
                 allowed=True,
                 limiter=self.legacy_quick_vip_giver_limiter,
