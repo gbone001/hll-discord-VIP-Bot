@@ -29,6 +29,7 @@ logging.basicConfig(level=logging.INFO)
 
 ANNOUNCEMENT_TITLE = "VIP Control Center"
 QUICK_VIP_ANNOUNCEMENT_TITLE = "Quick VIP Control Center"
+SWITCH_ME_ANNOUNCEMENT_TITLE = "Switch Me Control Center"
 QUICK_VIP_DURATION_MINUTES = 10
 LEGACY_QUICK_VIP_GIVER_ROLE_NAMES = {
     "MSU-Quick-VIP-Giver",
@@ -114,6 +115,26 @@ def build_quick_vip_announcement_embed(
     )
     embed.add_field(name="Local Timezone", value=config.timezone_name, inline=True)
     embed.set_footer(text="Eligibility is controlled by legacy clan roles, the moderator role, or nominated Discord roles.")
+    return embed
+
+
+def build_switch_me_announcement_embed(
+    config: AppConfig,
+    _last_switch_at: Optional[datetime],
+) -> discord.Embed:
+    description_lines = [
+        "Use the button below to request a move to the opposite team.",
+        'When registering you need to paste your player_id string, for example "2805d5bbe14b6ec432f82e5cb859d012", from https://hllrecords.com.',
+        "The switch only succeeds if you are currently in-game and the opposite team has space available.",
+    ]
+    embed = discord.Embed(
+        title=SWITCH_ME_ANNOUNCEMENT_TITLE,
+        description="\n".join(description_lines),
+        color=0xF1C40F,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Local Timezone", value=config.timezone_name, inline=True)
+    embed.set_footer(text="Buttons stay active across restarts.")
     return embed
 
 
@@ -296,6 +317,8 @@ class AppConfig:
     announcement_message_id: Optional[int] = None
     quick_vip_channel_id: Optional[int] = None
     quick_vip_announcement_message_id: Optional[int] = None
+    switch_me_channel_id: Optional[int] = None
+    switch_me_announcement_message_id: Optional[int] = None
     quick_vip_role_ids: Tuple[int, ...] = ()
     http_credentials: Optional[HttpCredentials] = None
     moderator_role_id: Optional[int] = None
@@ -746,6 +769,8 @@ def load_config() -> AppConfig:
     announcement_message_id = optional_int("ANNOUNCEMENT_MESSAGE_ID")
     quick_vip_channel_id = optional_int("QUICK_VIP_CHANNEL_ID")
     quick_vip_announcement_message_id = optional_int("QUICK_VIP_ANNOUNCEMENT_MESSAGE_ID")
+    switch_me_channel_id = optional_int("SWITCH_ME_CHANNEL_ID")
+    switch_me_announcement_message_id = optional_int("SWITCH_ME_ANNOUNCEMENT_MESSAGE_ID")
     quick_vip_role_ids = optional_int_list("QUICK_VIP_ROLE_IDS")
     moderator_role_id = optional_int("MODERATOR_ROLE_ID")
     vip_temp_role_id = optional_int("VIP_TEMP_ROLE_ID")
@@ -814,6 +839,8 @@ def load_config() -> AppConfig:
         announcement_message_id=announcement_message_id,
         quick_vip_channel_id=quick_vip_channel_id,
         quick_vip_announcement_message_id=quick_vip_announcement_message_id,
+        switch_me_channel_id=switch_me_channel_id,
+        switch_me_announcement_message_id=switch_me_announcement_message_id,
         quick_vip_role_ids=quick_vip_role_ids,
         http_credentials=http_credentials,
         moderator_role_id=moderator_role_id,
@@ -1071,6 +1098,43 @@ class VipHttpClient:
                 players.append(player)
         return players
 
+    def get_gamestate(self) -> Dict[str, Any]:
+        try:
+            response = self._request_with_reauth("GET", "get_gamestate")
+        except requests.exceptions.RequestException as exc:
+            raise VipHTTPError(f"HTTP API request failed: {exc}") from exc
+
+        if response.status_code != 200:
+            raise VipHTTPError(f"get_gamestate failed with status {response.status_code}: {response.text}")
+
+        data = self._parse_json(response)
+        if data.get("failed"):
+            raise VipHTTPError(f"get_gamestate reported failure: {data.get('error') or data}")
+        result = data.get("result")
+        if result is None:
+            return {}
+        if not isinstance(result, dict):
+            raise VipHTTPError("get_gamestate returned an unexpected result format.")
+        return result
+
+    def switch_player_now(self, player_id: str) -> Dict[str, Any]:
+        payload = {"player_id": player_id}
+
+        try:
+            response = self._request_with_reauth("POST", "switch_player_now", json_payload=payload)
+        except requests.exceptions.RequestException as exc:
+            raise VipHTTPError(f"HTTP API request failed: {exc}") from exc
+
+        if response.status_code != 200:
+            raise VipHTTPError(
+                f"switch_player_now failed with status {response.status_code}: {response.text}"
+            )
+
+        data = self._parse_json(response)
+        if data.get("failed"):
+            raise VipHTTPError(f"switch_player_now reported failure: {data.get('error') or data}")
+        return data
+
     def message_player(
         self,
         player_id: str,
@@ -1164,6 +1228,16 @@ class TeamMessageDispatchResult:
     attempted: int
     sent: int
     failed: int
+
+
+@dataclass(frozen=True)
+class TeamSwitchResult:
+    player_id: str
+    current_team: str
+    target_team: str
+    switched: bool
+    detail: str
+    status_lines: List[str]
 
 
 @dataclass(frozen=True)
@@ -1298,6 +1372,49 @@ class VipService:
             attempted=attempted,
             sent=sent,
             failed=failed,
+        )
+
+    def switch_player_to_opposite_team(
+        self,
+        player_id: str,
+        requester_display_name: str,
+    ) -> TeamSwitchResult:
+        players = self._http_client.get_players()
+        player = self._find_player(players, player_id)
+        if player is None:
+            raise VipHTTPError("Player was not found in the current server player list.")
+
+        current_team = self._extract_team_name(player)
+        if current_team not in {"axis", "allies"}:
+            raise VipHTTPError("Player is not currently assigned to Axis or Allies.")
+
+        target_team = "allies" if current_team == "axis" else "axis"
+        gamestate = self._http_client.get_gamestate()
+        target_count = self._get_team_player_count(gamestate, target_team)
+        if target_count >= 50:
+            raise VipHTTPError(
+                f"Cannot switch player because the {target_team.capitalize()} team is full ({target_count}/50)."
+            )
+
+        response = self._http_client.switch_player_now(player_id)
+        message: Any = response.get("result")
+        if isinstance(message, dict):
+            message = message.get("result") or message
+        if message is None:
+            message = "HTTP API switch_player_now succeeded."
+        detail = str(message)
+        return TeamSwitchResult(
+            player_id=player_id,
+            current_team=current_team,
+            target_team=target_team,
+            switched=True,
+            detail=detail,
+            status_lines=[
+                f"Requested by {requester_display_name}",
+                f"Current team: {current_team.capitalize()}",
+                f"Target team: {target_team.capitalize()}",
+                f"HTTP API: {detail}",
+            ],
         )
 
     def _determine_extended_expiration(
@@ -1437,6 +1554,40 @@ class VipService:
             if team_name == recipient and isinstance(player, dict):
                 filtered.append(player)
         return filtered
+
+    @staticmethod
+    def _find_player(players: Any, player_id: str) -> Optional[Dict[str, Any]]:
+        if not isinstance(players, list):
+            return None
+        normalized_player_id = player_id.strip()
+        for player in players:
+            if not isinstance(player, dict):
+                continue
+            candidate_id = VipService._extract_player_id(player)
+            if candidate_id == normalized_player_id:
+                return player
+        return None
+
+    @staticmethod
+    def _get_team_player_count(gamestate: Any, team_name: str) -> int:
+        if not isinstance(gamestate, dict):
+            raise VipHTTPError("get_gamestate returned an unexpected result format.")
+
+        if team_name == "axis":
+            candidate_keys = ("num_axis_players", "axis_players", "axis_count")
+        elif team_name == "allies":
+            candidate_keys = ("num_allied_players", "num_allies_players", "allied_players", "allies_count")
+        else:
+            raise VipHTTPError(f"Unsupported team name {team_name!r}.")
+
+        for key in candidate_keys:
+            value = gamestate.get(key)
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+
+        raise VipHTTPError(f"Could not determine current player count for the {team_name} team.")
 
 
 class VipRequestModal(Modal):
@@ -1779,6 +1930,119 @@ class QuickVipView(PersistentView):
         schedule_ephemeral_cleanup(interaction, message=followup_message)
 
 
+class SwitchMeRequestModal(Modal):
+    def __init__(self, parent_view: "SwitchMeView") -> None:
+        super().__init__(title="Request Team Switch", custom_id="frontline-pass-switch-me-modal")
+        self._parent_view = parent_view
+        self.player_id = TextInput(
+            label="HLL player_id",
+            placeholder=PLAYER_ID_PLACEHOLDER,
+            custom_id="frontline-pass-switch-me-player-id-input",
+            min_length=32,
+            max_length=32,
+            style=discord.TextStyle.short,
+        )
+        self.add_item(self.player_id)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self._parent_view.handle_modal_submission(interaction, self.player_id.value)
+
+
+class SwitchMeView(PersistentView):
+    def __init__(
+        self,
+        bot: "FrontlinePassBot",
+        config: AppConfig,
+        vip_service: VipService,
+    ) -> None:
+        super().__init__()
+        self.bot = bot
+        self.config = config
+        self.vip_service = vip_service
+
+    @discord.ui.button(
+        label="Switch Me",
+        style=ButtonStyle.secondary,
+        custom_id="frontline-pass-switch-me",
+    )
+    async def switch_me_button(self, interaction: discord.Interaction, _: Button) -> None:
+        modal = SwitchMeRequestModal(self)
+        try:
+            await interaction.response.send_modal(modal)
+        except discord.HTTPException:
+            logging.exception("Failed to open Switch Me modal for %s", interaction.user.id)
+            error_message = "I couldn't open the Switch Me form. Please try again shortly."
+            if interaction.response.is_done():
+                followup = await interaction.followup.send(error_message, ephemeral=True, wait=True)
+                schedule_ephemeral_cleanup(interaction, message=followup)
+            else:
+                await interaction.response.send_message(error_message, ephemeral=True)
+                schedule_ephemeral_cleanup(interaction)
+
+    async def handle_modal_submission(self, interaction: discord.Interaction, player_id: str) -> None:
+        player_id = player_id.strip()
+        if not player_id:
+            await interaction.response.send_message("player_id cannot be empty.", ephemeral=True)
+            schedule_ephemeral_cleanup(interaction)
+            return
+
+        if len(player_id) != 32:
+            await interaction.response.send_message(
+                "player_id must be a 32-character string copied from https://hllrecords.com.",
+                ephemeral=True,
+            )
+            schedule_ephemeral_cleanup(interaction)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            result = await asyncio.to_thread(
+                self.vip_service.switch_player_to_opposite_team,
+                player_id,
+                interaction.user.display_name,
+            )
+        except VipHTTPError as exc:
+            logging.exception("Failed to switch player %s to the opposite team", player_id)
+            followup_message = await interaction.followup.send(
+                f"Error: team switch could not be completed: {exc}",
+                ephemeral=True,
+                wait=True,
+            )
+            schedule_ephemeral_cleanup(interaction, message=followup_message)
+            return
+        except Exception as exc:  # pragma: no cover
+            logging.exception("Unexpected error while switching player %s: %s", player_id, exc)
+            followup_message = await interaction.followup.send(
+                "An unexpected error occurred while switching teams.",
+                ephemeral=True,
+                wait=True,
+            )
+            schedule_ephemeral_cleanup(interaction, message=followup_message)
+            return
+
+        logging.info(
+            "Switched player %s from %s to %s (%s)",
+            result.player_id,
+            result.current_team,
+            result.target_team,
+            "; ".join(result.status_lines),
+        )
+        status_summary = "\n".join(f"- {line}" for line in result.status_lines)
+        message_body = (
+            "Team switch requested successfully.\n"
+            f"Linked player_id: {result.player_id}\n"
+            f"From: {result.current_team.capitalize()}\n"
+            f"To: {result.target_team.capitalize()}\n\n"
+            f"**Status**:\n{status_summary}"
+        )
+        followup_message = await interaction.followup.send(
+            message_body,
+            ephemeral=True,
+            wait=True,
+        )
+        schedule_ephemeral_cleanup(interaction, message=followup_message)
+
+
 class FrontlinePassBot(commands.Bot):
     def __init__(self, config: AppConfig, vip_service: VipService) -> None:
         intents = discord.Intents.default()
@@ -1792,6 +2056,7 @@ class FrontlinePassBot(commands.Bot):
             title=ANNOUNCEMENT_TITLE,
         )
         self.quick_vip_announcement_manager: Optional[AnnouncementManager] = None
+        self.switch_me_announcement_manager: Optional[AnnouncementManager] = None
         if config.quick_vip_channel_id:
             self.quick_vip_announcement_manager = AnnouncementManager(
                 config,
@@ -1799,8 +2064,16 @@ class FrontlinePassBot(commands.Bot):
                 announcement_message_id=config.quick_vip_announcement_message_id,
                 title=QUICK_VIP_ANNOUNCEMENT_TITLE,
             )
+        if config.switch_me_channel_id:
+            self.switch_me_announcement_manager = AnnouncementManager(
+                config,
+                channel_id=config.switch_me_channel_id,
+                announcement_message_id=config.switch_me_announcement_message_id,
+                title=SWITCH_ME_ANNOUNCEMENT_TITLE,
+            )
         self.persistent_view: Optional[CombinedView] = None
         self.quick_vip_view: Optional[QuickVipView] = None
+        self.switch_me_view: Optional[SwitchMeView] = None
         self._vip_duration_hours = config.vip_duration_hours
         self._last_grant_utc: Optional[datetime] = None
         limiter_state_path = config.state_directory / "vip_assign_usage.json"
@@ -1839,6 +2112,9 @@ class FrontlinePassBot(commands.Bot):
         if self.quick_vip_announcement_manager:
             self.quick_vip_view = QuickVipView(self, self.config, self.vip_service)
             self.add_view(self.quick_vip_view)
+        if self.switch_me_announcement_manager:
+            self.switch_me_view = SwitchMeView(self, self.config, self.vip_service)
+            self.add_view(self.switch_me_view)
         await self._register_commands()
         guild_ids_raw = os.getenv("COMMAND_GUILD_IDS") or os.getenv("COMMAND_GUILD_ID")
         synced_any_guild = False
@@ -1872,6 +2148,7 @@ class FrontlinePassBot(commands.Bot):
         logging.info("HTTP API base=%s; current VIP duration=%.2f hours", http_base, self.vip_duration_hours)
         await self.refresh_announcement_message()
         await self.refresh_quick_vip_announcement_message()
+        await self.refresh_switch_me_announcement_message()
 
     async def refresh_announcement_message(self) -> None:
         if not self.persistent_view:
@@ -1890,6 +2167,15 @@ class FrontlinePassBot(commands.Bot):
             self,
             self.quick_vip_view,
             build_quick_vip_announcement_embed(self.config, self.last_grant_time),
+        )
+
+    async def refresh_switch_me_announcement_message(self) -> None:
+        if not self.switch_me_announcement_manager or not self.switch_me_view:
+            return
+        await self.switch_me_announcement_manager.ensure(
+            self,
+            self.switch_me_view,
+            build_switch_me_announcement_embed(self.config, self.last_grant_time),
         )
 
     def _user_has_moderator_privileges(self, user: discord.abc.User) -> bool:
@@ -2056,6 +2342,50 @@ class FrontlinePassBot(commands.Bot):
             else:
                 followup_message = await interaction.followup.send(
                     "Unable to repost the Quick VIP controls. Check the bot logs for details.",
+                    ephemeral=True,
+                    wait=True,
+                )
+                schedule_ephemeral_cleanup(interaction, message=followup_message)
+
+        @self.tree.command(
+            name="repost_switch_me_controls",
+            description="Repost the Switch Me control panel.",
+        )
+        async def repost_switch_me_controls(interaction: discord.Interaction) -> None:
+            permissions = getattr(interaction.user, "guild_permissions", None)  # type: ignore[attr-defined]
+            if not permissions or not permissions.administrator:
+                await interaction.response.send_message(
+                    "You need administrator permissions to use this command.",
+                    ephemeral=True,
+                )
+                schedule_ephemeral_cleanup(interaction)
+                return
+
+            if not self.switch_me_announcement_manager or not self.switch_me_view:
+                await interaction.response.send_message(
+                    "Switch Me controls are not configured. Set SWITCH_ME_CHANNEL_ID first.",
+                    ephemeral=True,
+                )
+                schedule_ephemeral_cleanup(interaction)
+                return
+
+            await interaction.response.defer(ephemeral=True)
+            message = await self.switch_me_announcement_manager.ensure(
+                self,
+                self.switch_me_view,
+                build_switch_me_announcement_embed(self.config, self.last_grant_time),
+                force_new=True,
+            )
+            if message:
+                followup_message = await interaction.followup.send(
+                    f"Switch Me controls reposted successfully (message ID {message.id}).",
+                    ephemeral=True,
+                    wait=True,
+                )
+                schedule_ephemeral_cleanup(interaction, message=followup_message)
+            else:
+                followup_message = await interaction.followup.send(
+                    "Unable to repost the Switch Me controls. Check the bot logs for details.",
                     ephemeral=True,
                     wait=True,
                 )
