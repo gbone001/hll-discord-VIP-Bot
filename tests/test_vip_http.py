@@ -26,9 +26,7 @@ VipService = frontline_pass.VipService
 RollingWindowLimiter = frontline_pass.RollingWindowLimiter
 FrontlinePassBot = frontline_pass.FrontlinePassBot
 QuickVipView = frontline_pass.QuickVipView
-SwitchMeView = frontline_pass.SwitchMeView
 PlayerVipStatus = frontline_pass.PlayerVipStatus
-TeamSwitchResult = frontline_pass.TeamSwitchResult
 QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS = frontline_pass.QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS
 LEGACY_QUICK_VIP_GIVER_ROLE_NAMES = frontline_pass.LEGACY_QUICK_VIP_GIVER_ROLE_NAMES
 LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW = frontline_pass.LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW
@@ -367,47 +365,6 @@ class VipHttpClientTests(unittest.TestCase):
             },
         )
 
-    def test_get_gamestate_fetches_result(self) -> None:
-        session = DummySession(
-            DummyResponse(
-                200,
-                {"result": {"num_axis_players": 48, "num_allied_players": 46}},
-            )
-        )
-        client = VipHttpClient(
-            HttpCredentials(base_url="https://example/api", bearer_token="abc123"),
-            session=session,
-        )
-
-        gamestate = client.get_gamestate()
-
-        self.assertEqual(gamestate["num_axis_players"], 48)
-        self.assertEqual(session.calls[0]["method"], "GET")
-        self.assertEqual(session.calls[0]["url"], "https://example/api/get_gamestate")
-
-    def test_switch_player_now_posts_payload(self) -> None:
-        session = DummySession(DummyResponse(200, {"result": True}))
-        client = VipHttpClient(
-            HttpCredentials(base_url="https://example/api", bearer_token="abc123"),
-            session=session,
-        )
-
-        result = client.switch_player_now("player-id")
-
-        self.assertTrue(result["result"])
-        self.assertEqual(session.calls[0]["url"], "https://example/api/switch_player_now")
-        self.assertEqual(session.calls[0]["json"], {"player_id": "player-id"})
-
-    def test_switch_player_now_raises_on_failure(self) -> None:
-        session = DummySession(DummyResponse(403, {"failed": True, "error": "forbidden"}))
-        client = VipHttpClient(
-            HttpCredentials(base_url="https://example/api", bearer_token="abc123"),
-            session=session,
-        )
-
-        with self.assertRaises(VipHTTPError):
-            client.switch_player_now("player-id")
-
     def test_set_broadcast_posts_message(self) -> None:
         session = DummySession(
             [
@@ -672,50 +629,6 @@ class VipServiceTests(unittest.TestCase):
         with self.assertRaises(VipHTTPError):
             service.message_team("spectators", "Hello", "Moderator")
 
-    def test_switch_player_to_opposite_team_axis_to_allies(self) -> None:
-        service = VipService(self.config)
-        fake_http_client = mock.Mock()
-        fake_http_client.get_players.return_value = [
-            {"player_id": "steam123", "team": "Axis"},
-        ]
-        fake_http_client.get_gamestate.return_value = {
-            "num_axis_players": 49,
-            "num_allied_players": 48,
-        }
-        fake_http_client.switch_player_now.return_value = {"result": True}
-        service._http_client = fake_http_client  # type: ignore[attr-defined]
-
-        result = service.switch_player_to_opposite_team("steam123", "GBONE")
-
-        self.assertTrue(result.switched)
-        self.assertEqual(result.current_team, "axis")
-        self.assertEqual(result.target_team, "allies")
-        fake_http_client.switch_player_now.assert_called_once_with("steam123")
-
-    def test_switch_player_to_opposite_team_rejects_missing_player(self) -> None:
-        service = VipService(self.config)
-        fake_http_client = mock.Mock()
-        fake_http_client.get_players.return_value = []
-        service._http_client = fake_http_client  # type: ignore[attr-defined]
-
-        with self.assertRaises(VipHTTPError):
-            service.switch_player_to_opposite_team("steam123", "GBONE")
-
-    def test_switch_player_to_opposite_team_rejects_full_team(self) -> None:
-        service = VipService(self.config)
-        fake_http_client = mock.Mock()
-        fake_http_client.get_players.return_value = [
-            {"player_id": "steam123", "team": "Allies"},
-        ]
-        fake_http_client.get_gamestate.return_value = {
-            "num_axis_players": 50,
-            "num_allied_players": 47,
-        }
-        service._http_client = fake_http_client  # type: ignore[attr-defined]
-
-        with self.assertRaises(VipHTTPError):
-            service.switch_player_to_opposite_team("steam123", "GBONE")
-
 
 class RollingWindowLimiterTests(unittest.IsolatedAsyncioTestCase):
     async def test_try_consume_blocks_after_limit(self) -> None:
@@ -816,7 +729,6 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
             state_directory=self.base_config.state_directory,
             http_credentials=self.base_config.http_credentials,
             vip_assign_limit=self.base_config.vip_assign_limit,
-            moderator_role_id=self.base_config.moderator_role_id,
             vip_temp_role_id=vip_temp_role_id,
             quick_vip_role_ids=self.base_config.quick_vip_role_ids,
         )
@@ -1017,47 +929,6 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
         legacy_usage = await bot.legacy_quick_vip_giver_limiter.get_usage(moderator_user.id)
         self.assertEqual(nominated_usage.used, 0)
         self.assertEqual(legacy_usage.used, 0)
-
-    async def test_switch_me_rejects_invalid_player_id(self) -> None:
-        bot = await self._build_bot()
-        interaction = DummyInteraction(user=DummyMember(15, "Switcher"), guild=DummyGuild())
-        vip_service = mock.Mock()
-        view = SwitchMeView(bot, bot.config, vip_service)
-
-        with mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"):
-            await view.handle_modal_submission(interaction, "short-id")
-
-        self.assertEqual(len(interaction.response.messages), 1)
-        self.assertIn("32-character string", interaction.response.messages[0][0])
-        self.assertFalse(vip_service.switch_player_to_opposite_team.called)
-
-    async def test_switch_me_returns_success_message(self) -> None:
-        bot = await self._build_bot()
-        interaction = DummyInteraction(user=DummyMember(16, "Switcher"), guild=DummyGuild())
-        vip_service = mock.Mock()
-        vip_service.switch_player_to_opposite_team.return_value = TeamSwitchResult(
-            player_id="2805d5bbe14b6ec432f82e5cb859d012",
-            current_team="axis",
-            target_team="allies",
-            switched=True,
-            detail="True",
-            status_lines=[
-                "Requested by Switcher",
-                "Current team: Axis",
-                "Target team: Allies",
-                "HTTP API: True",
-            ],
-        )
-        view = SwitchMeView(bot, bot.config, vip_service)
-
-        with (
-            mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"),
-            mock.patch.object(frontline_pass.asyncio, "to_thread", new=mock.AsyncMock(side_effect=vip_service.switch_player_to_opposite_team)),
-        ):
-            await view.handle_modal_submission(interaction, "2805d5bbe14b6ec432f82e5cb859d012")
-
-        self.assertEqual(len(interaction.followup.messages), 1)
-        self.assertIn("Team switch requested successfully.", interaction.followup.messages[0][0])
 
 
 class LoadConfigTests(unittest.TestCase):

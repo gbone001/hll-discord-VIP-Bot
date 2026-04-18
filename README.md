@@ -6,7 +6,6 @@ Frontline Pass is a Discord bot that lets Hell Let Loose players enter their `pl
 
 - **Self-service VIPs** - players press **Get VIP**, paste their Player-ID, and receive VIP without moderator intervention.
 - **Quick VIP panel** - members with either legacy clan Quick VIP roles or nominated Discord roles can press **Quick VIP**, paste any player_id, and grant a fixed 10-minute VIP window.
-- **Switch Me panel** - players can press **Switch Me**, paste the same `player_id` from hllrecords.com used by the VIP form, and request a move to the opposite team.
 - **Moderator assist: /assignvip** - moderators can grant a temporary Discord role to a member so they can access the VIP channel to claim; the role is removed automatically after claiming.
 - **Team messaging: /game_server_message** - moderators can send a custom in-game message to Axis, Allies, or Both and get delivery confirmation.
 - **HTTP transport** - all VIP grants are issued through the CRCON HTTP API (bearer token preferred, login fallback optional).
@@ -67,12 +66,10 @@ All primary settings live in `config.jsonc` (JSON5 syntax). Environment variable
 | `VIP_DURATION_HOURS` | Yes | Duration of each VIP grant. |
 | `CHANNEL_ID` | Yes | Channel hosting the control panel buttons. |
 | `QUICK_VIP_CHANNEL_ID` | Optional | Separate channel hosting the persistent Quick VIP panel. Members with either a legacy clan Quick VIP role or one of the nominated Quick VIP roles can use it to grant a fixed 10-minute VIP. |
-| `SWITCH_ME_CHANNEL_ID` | Optional | Separate channel hosting the persistent Switch Me panel. Players paste the same `player_id` from hllrecords.com used by the VIP form to request a move to the opposite team. |
 | `QUICK_VIP_ROLE_IDS` | Optional | Comma-separated env var or JSON array of Discord role IDs that are allowed to use Quick VIP under the newer `1 per 48 hours` rule. Legacy clan Quick VIP roles still keep their existing quota. |
 | `LOCAL_TIMEZONE` | Yes | Timezone for human-readable expiry timestamps (e.g. `Australia/Sydney`). |
 | `ANNOUNCEMENT_MESSAGE_ID` | Optional | Reuse an existing Discord message for the control panel. |
 | `QUICK_VIP_ANNOUNCEMENT_MESSAGE_ID` | Optional | Reuse an existing Discord message for the Quick VIP control panel. |
-| `SWITCH_ME_ANNOUNCEMENT_MESSAGE_ID` | Optional | Reuse an existing Discord message for the Switch Me control panel. |
 | `MODERATOR_ROLE_ID` | Optional | Discord role ID treated as moderator for privileged commands such as `/assignvip`, `/set_vip_duration`, and `/game_server_message`. |
 | `VIP_TEMP_ROLE_ID`, `VIP_CLAIM_CHANNEL_ID` | Optional | Used by `/assignvip`. `VIP_TEMP_ROLE_ID` is a temporary Discord role that grants access to your VIP claim channel. `VIP_CLAIM_CHANNEL_ID` is the channel ID where the control panel lives (falls back to `CHANNEL_ID` if unset). |
 | `VIP_ASSIGN_LIMIT` | Optional | Weekly per-moderator cap for `/assignvip`. Defaults to `5` uses and resets every Monday at 01:00 in `LOCAL_TIMEZONE`. |
@@ -93,7 +90,6 @@ The bot validates required settings on startup and exits with a clear error when
   DISCORD_TOKEN: "your-discord-token",
   CHANNEL_ID: 123456789012345678,
   QUICK_VIP_CHANNEL_ID: 234567890123456789,
-  SWITCH_ME_CHANNEL_ID: 345678901234567890,
   QUICK_VIP_ROLE_IDS: [345678901234567890, 456789012345678901],
   VIP_DURATION_HOURS: 24,
   LOCAL_TIMEZONE: "Australia/Sydney",
@@ -109,8 +105,7 @@ The bot validates required settings on startup and exits with a clear error when
 
   MODERATOR_ROLE_ID: null,
   ANNOUNCEMENT_MESSAGE_ID: null,
-  QUICK_VIP_ANNOUNCEMENT_MESSAGE_ID: null,
-  SWITCH_ME_ANNOUNCEMENT_MESSAGE_ID: null
+  QUICK_VIP_ANNOUNCEMENT_MESSAGE_ID: null
 }
 ```
 
@@ -123,25 +118,14 @@ Admins can refresh the message at any time with `/repost_frontline_controls`.
 ### Quick VIP panel
 
 1. Users open the dedicated `QUICK_VIP_CHANNEL_ID` channel and press **Quick VIP (10 min)**.
-2. The user must hold either one of the legacy clan Quick VIP roles, the configured `MODERATOR_ROLE_ID`, or one of the configured `QUICK_VIP_ROLE_IDS`.
+2. The user must hold either one of the legacy clan Quick VIP roles or one of the configured `QUICK_VIP_ROLE_IDS`.
 3. They paste the target player's `player_id` from [https://hllrecords.com](https://hllrecords.com).
 4. The bot grants a fixed 10-minute VIP window starting from the current time.
-5. Users with legacy clan Quick VIP roles can use it up to 5 times per 24 hours, while the configured `MODERATOR_ROLE_ID` can use Quick VIP without a cooldown cap.
+5. Users with legacy clan Quick VIP roles can use it up to 5 times per 24 hours.
 6. Users with `QUICK_VIP_ROLE_IDS` can use it once every 48 hours.
 7. This does not add 10 minutes to an existing VIP total; it sets the expiration to 10 minutes from the moment the button is used.
 
 Admins can refresh the Quick VIP panel at any time with `/repost_quick_vip_controls`.
-
-### Switch Me panel
-
-1. Users open the dedicated `SWITCH_ME_CHANNEL_ID` channel and press **Switch Me**.
-2. They paste the same 32-character `player_id` from [https://hllrecords.com](https://hllrecords.com) used by the VIP form.
-3. The bot looks up the player on the configured CRCON server, detects the current team, and checks whether the opposite team has room.
-4. If the opposite team has space available, the bot calls the CRCON switch endpoint immediately.
-5. If the player is not in-game, has no supported team assignment, or the opposite team is full, the bot fails explicitly and shows the reason.
-6. This MVP is single-CRCON and does not queue full-team requests.
-
-Admins can refresh the Switch Me panel at any time with `/repost_switch_me_controls`.
 
 ### New: Moderator flow with `/assignvip`
 
