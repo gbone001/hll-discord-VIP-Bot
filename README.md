@@ -68,7 +68,7 @@ All primary settings live in `config.jsonc` (JSON5 syntax). Environment variable
 | `CHANNEL_ID` | Yes | Channel hosting the control panel buttons. |
 | `QUICK_VIP_CHANNEL_ID` | Optional | Separate channel hosting the persistent Quick VIP panel. Members with either a legacy clan Quick VIP role or one of the nominated Quick VIP roles can use it to grant a fixed 10-minute VIP. |
 | `SWITCH_ME_CHANNEL_ID` | Optional | Separate channel hosting the persistent Switch Me panel. Players paste the same `player_id` from hllrecords.com used by the VIP form to request a move to the opposite team. |
-| `QUICK_VIP_ROLE_IDS` | Optional | Comma-separated env var or JSON array of Discord role IDs that are allowed to use Quick VIP under the newer `1 per 48 hours` rule. Legacy clan Quick VIP roles still keep their existing quota. |
+| `QUICK_VIP_ROLE_IDS` | Optional | Comma-separated env var or JSON array of Discord role IDs that are allowed to use Quick VIP under the newer `1 per 48 hours` rule. The bot now includes `MSU` (`1322175167685988403`) as a built-in nominated role by default. Legacy clan Quick VIP roles still keep their existing quota. |
 | `LOCAL_TIMEZONE` | Yes | Timezone for human-readable expiry timestamps (e.g. `Australia/Sydney`). |
 | `ANNOUNCEMENT_MESSAGE_ID` | Optional | Reuse an existing Discord message for the control panel. |
 | `QUICK_VIP_ANNOUNCEMENT_MESSAGE_ID` | Optional | Reuse an existing Discord message for the Quick VIP control panel. |
@@ -94,7 +94,7 @@ The bot validates required settings on startup and exits with a clear error when
   CHANNEL_ID: 123456789012345678,
   QUICK_VIP_CHANNEL_ID: 234567890123456789,
   SWITCH_ME_CHANNEL_ID: 345678901234567890,
-  QUICK_VIP_ROLE_IDS: [345678901234567890, 456789012345678901],
+  QUICK_VIP_ROLE_IDS: [1322175167685988403, 345678901234567890, 456789012345678901],
   VIP_DURATION_HOURS: 24,
   LOCAL_TIMEZONE: "Australia/Sydney",
   FRONTLINE_STATE_DIR: "/data",
@@ -127,7 +127,7 @@ Admins can refresh the message at any time with `/repost_frontline_controls`.
 3. They paste the target player's `player_id` from [https://hllrecords.com](https://hllrecords.com).
 4. The bot grants a fixed 10-minute VIP window starting from the current time.
 5. Users with legacy clan Quick VIP roles can use it up to 5 times per 24 hours, while the configured `MODERATOR_ROLE_ID` can use Quick VIP without a cooldown cap.
-6. Users with `QUICK_VIP_ROLE_IDS` can use it once every 48 hours.
+6. Users with `QUICK_VIP_ROLE_IDS` can use it once every 48 hours. By default this includes the `MSU` role (`1322175167685988403`).
 7. This does not add 10 minutes to an existing VIP total; it sets the expiration to 10 minutes from the moment the button is used.
 
 Admins can refresh the Quick VIP panel at any time with `/repost_quick_vip_controls`.
