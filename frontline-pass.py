@@ -31,6 +31,9 @@ ANNOUNCEMENT_TITLE = "VIP Control Center"
 QUICK_VIP_ANNOUNCEMENT_TITLE = "Quick VIP Control Center"
 SWITCH_ME_ANNOUNCEMENT_TITLE = "Switch Me Control Center"
 QUICK_VIP_DURATION_MINUTES = 10
+DEFAULT_QUICK_VIP_ROLE_IDS = (
+    1322175167685988403,  # MSU
+)
 LEGACY_QUICK_VIP_GIVER_ROLE_NAMES = {
     "MSU-Quick-VIP-Giver",
     "ROFS-Quick-VIP-Giver",
@@ -319,7 +322,7 @@ class AppConfig:
     quick_vip_announcement_message_id: Optional[int] = None
     switch_me_channel_id: Optional[int] = None
     switch_me_announcement_message_id: Optional[int] = None
-    quick_vip_role_ids: Tuple[int, ...] = ()
+    quick_vip_role_ids: Tuple[int, ...] = DEFAULT_QUICK_VIP_ROLE_IDS
     http_credentials: Optional[HttpCredentials] = None
     moderator_role_id: Optional[int] = None
     vip_temp_role_id: Optional[int] = None
@@ -841,7 +844,7 @@ def load_config() -> AppConfig:
         quick_vip_announcement_message_id=quick_vip_announcement_message_id,
         switch_me_channel_id=switch_me_channel_id,
         switch_me_announcement_message_id=switch_me_announcement_message_id,
-        quick_vip_role_ids=quick_vip_role_ids,
+        quick_vip_role_ids=quick_vip_role_ids or DEFAULT_QUICK_VIP_ROLE_IDS,
         http_credentials=http_credentials,
         moderator_role_id=moderator_role_id,
         vip_temp_role_id=vip_temp_role_id,
