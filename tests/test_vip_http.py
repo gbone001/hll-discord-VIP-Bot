@@ -32,7 +32,6 @@ TeamSwitchResult = frontline_pass.TeamSwitchResult
 QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS = frontline_pass.QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS
 LEGACY_QUICK_VIP_GIVER_ROLE_NAMES = frontline_pass.LEGACY_QUICK_VIP_GIVER_ROLE_NAMES
 LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW = frontline_pass.LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW
-DEFAULT_QUICK_VIP_ROLE_IDS = frontline_pass.DEFAULT_QUICK_VIP_ROLE_IDS
 
 
 class DummyResponse:
@@ -1062,46 +1061,6 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LoadConfigTests(unittest.TestCase):
-    def test_load_config_defaults_quick_vip_roles_to_built_in_ids(self) -> None:
-        original_file = frontline_pass.__file__
-        temp_root = pathlib.Path(tempfile.mkdtemp())
-        fake_module_path = temp_root / "frontline-pass.py"
-        fake_module_path.write_text("# test module marker\n", encoding="utf-8")
-
-        required_env = {
-            "DISCORD_TOKEN": "token",
-            "CHANNEL_ID": "123",
-            "VIP_DURATION_HOURS": "72",
-            "LOCAL_TIMEZONE": "Australia/Sydney",
-            "CRCON_HTTP_BASE_URL": "https://example.com",
-            "CRCON_HTTP_BEARER_TOKEN": "bearer-token",
-        }
-        removed_env = {
-            "FRONTLINE_STATE_DIR": os.environ.get("FRONTLINE_STATE_DIR"),
-            "FRONTLINE_CONFIG_PATH": os.environ.get("FRONTLINE_CONFIG_PATH"),
-            "QUICK_VIP_ROLE_IDS": os.environ.get("QUICK_VIP_ROLE_IDS"),
-        }
-
-        try:
-            frontline_pass.__file__ = str(fake_module_path)
-            for key, value in required_env.items():
-                os.environ[key] = value
-            for key in removed_env:
-                os.environ.pop(key, None)
-
-            config = frontline_pass.load_config()
-
-            self.assertEqual(config.quick_vip_role_ids, DEFAULT_QUICK_VIP_ROLE_IDS)
-        finally:
-            frontline_pass.__file__ = original_file
-            for key in required_env:
-                os.environ.pop(key, None)
-            for key, value in removed_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
     def test_load_config_uses_app_directory_when_no_state_dir_is_configured(self) -> None:
         original_file = frontline_pass.__file__
         temp_root = pathlib.Path(tempfile.mkdtemp())
