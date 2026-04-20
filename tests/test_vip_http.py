@@ -340,6 +340,31 @@ class VipHttpClientTests(unittest.TestCase):
         self.assertEqual(session.calls[0]["method"], "GET")
         self.assertEqual(session.calls[0]["url"], "https://example/api/get_players")
 
+    def test_get_detailed_players_fetches_players(self) -> None:
+        session = DummySession(
+            DummyResponse(
+                200,
+                {
+                    "result": {
+                        "players": {
+                            "p1": {"player_id": "p1", "team": "axis"},
+                            "p2": {"player_id": "p2", "team": "allies"},
+                        }
+                    }
+                },
+            )
+        )
+        client = VipHttpClient(
+            HttpCredentials(base_url="https://example/api", bearer_token="abc123"),
+            session=session,
+        )
+
+        players = client.get_detailed_players()
+
+        self.assertEqual(len(players), 2)
+        self.assertEqual(session.calls[0]["method"], "GET")
+        self.assertEqual(session.calls[0]["url"], "https://example/api/get_detailed_players")
+
     def test_message_player_posts_payload(self) -> None:
         session = DummySession(DummyResponse(200, {"result": True}))
         client = VipHttpClient(
@@ -676,7 +701,7 @@ class VipServiceTests(unittest.TestCase):
     def test_switch_player_to_opposite_team_axis_to_allies(self) -> None:
         service = VipService(self.config)
         fake_http_client = mock.Mock()
-        fake_http_client.get_players.return_value = [
+        fake_http_client.get_detailed_players.return_value = [
             {"player_id": "steam123", "team": "Axis"},
         ]
         fake_http_client.get_gamestate.return_value = {
@@ -696,7 +721,7 @@ class VipServiceTests(unittest.TestCase):
     def test_switch_player_to_opposite_team_rejects_missing_player(self) -> None:
         service = VipService(self.config)
         fake_http_client = mock.Mock()
-        fake_http_client.get_players.return_value = []
+        fake_http_client.get_detailed_players.return_value = []
         service._http_client = fake_http_client  # type: ignore[attr-defined]
 
         with self.assertRaises(VipHTTPError):
@@ -705,7 +730,7 @@ class VipServiceTests(unittest.TestCase):
     def test_switch_player_to_opposite_team_rejects_full_team(self) -> None:
         service = VipService(self.config)
         fake_http_client = mock.Mock()
-        fake_http_client.get_players.return_value = [
+        fake_http_client.get_detailed_players.return_value = [
             {"player_id": "steam123", "team": "Allies"},
         ]
         fake_http_client.get_gamestate.return_value = {

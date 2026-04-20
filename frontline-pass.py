@@ -1102,6 +1102,35 @@ class VipHttpClient:
                 players.append(player)
         return players
 
+    def get_detailed_players(self) -> List[Dict[str, Any]]:
+        try:
+            response = self._request_with_reauth("GET", "get_detailed_players")
+        except requests.exceptions.RequestException as exc:
+            raise VipHTTPError(f"HTTP API request failed: {exc}") from exc
+
+        if response.status_code != 200:
+            raise VipHTTPError(
+                f"get_detailed_players failed with status {response.status_code}: {response.text}"
+            )
+
+        data = self._parse_json(response)
+        if data.get("failed"):
+            raise VipHTTPError(f"get_detailed_players reported failure: {data.get('error') or data}")
+
+        result = data.get("result") or {}
+        if not isinstance(result, dict):
+            raise VipHTTPError("get_detailed_players returned an unexpected result format.")
+
+        players_raw = result.get("players") or {}
+        if not isinstance(players_raw, dict):
+            raise VipHTTPError("get_detailed_players returned an unexpected players format.")
+
+        players: List[Dict[str, Any]] = []
+        for player in players_raw.values():
+            if isinstance(player, dict):
+                players.append(player)
+        return players
+
     def get_gamestate(self) -> Dict[str, Any]:
         try:
             response = self._request_with_reauth("GET", "get_gamestate")
@@ -1383,7 +1412,7 @@ class VipService:
         player_id: str,
         requester_display_name: str,
     ) -> TeamSwitchResult:
-        players = self._http_client.get_players()
+        players = self._http_client.get_detailed_players()
         player = self._find_player(players, player_id)
         if player is None:
             raise VipHTTPError("Player was not found in the current server player list.")
