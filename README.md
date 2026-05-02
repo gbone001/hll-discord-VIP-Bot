@@ -5,7 +5,7 @@ Frontline Pass is a Discord bot that lets Hell Let Loose players enter their `pl
 ## Highlights
 
 - **Self-service VIPs** - players press **Get VIP**, paste their Player-ID, and receive VIP without moderator intervention.
-- **Quick VIP panel** - members with either legacy clan Quick VIP roles or nominated Discord roles can press **Quick VIP**, paste any player_id, and grant a fixed 10-minute VIP window.
+- **Quick VIP panel** - members with persisted Quick VIP role allocations can press **Quick VIP**, paste any player_id, and grant a fixed 10-minute VIP window.
 - **Switch Me panel** - players can press **Switch Me**, paste the same `player_id` from hllrecords.com used by the VIP form, and request a move to the opposite team.
 - **Moderator assist: /assignvip** - moderators can grant a temporary Discord role to a member so they can access the VIP channel to claim; the role is removed automatically after claiming.
 - **Team messaging: /game_server_message** - moderators can send a custom in-game message to Axis, Allies, or Both and get delivery confirmation.
@@ -66,9 +66,9 @@ All primary settings live in `config.jsonc` (JSON5 syntax). Environment variable
 | `DISCORD_TOKEN` | Yes | Discord bot token. |
 | `VIP_DURATION_HOURS` | Yes | Duration of each VIP grant. |
 | `CHANNEL_ID` | Yes | Channel hosting the control panel buttons. |
-| `QUICK_VIP_CHANNEL_ID` | Optional | Separate channel hosting the persistent Quick VIP panel. Members with either a legacy clan Quick VIP role or one of the nominated Quick VIP roles can use it to grant a fixed 10-minute VIP. |
+| `QUICK_VIP_CHANNEL_ID` | Optional | Separate channel hosting the persistent Quick VIP panel. Members with a persisted Quick VIP role allocation can use it to grant a fixed 10-minute VIP. |
 | `SWITCH_ME_CHANNEL_ID` | Optional | Separate channel hosting the persistent Switch Me panel. Players paste the same `player_id` from hllrecords.com used by the VIP form to request a move to the opposite team. |
-| `QUICK_VIP_ROLE_IDS` | Optional | Comma-separated env var or JSON array of Discord role IDs that are allowed to use Quick VIP under the newer `1 per 48 hours` rule. The bot now includes `MSU` (`1322175167685988403`) and `Randoms` (`1440534025054720020`) as built-in nominated roles by default. Legacy clan Quick VIP roles still keep their existing quota. |
+| `QUICK_VIP_ROLE_IDS` | Optional | Backward-compatible seed list for Quick VIP allocations. On startup, these role IDs are persisted to `quick_vip_allocations.json` as `1 use / 48 hours`. Defaults include `MSU` (`1322175167685988403`) and `Randoms` (`1440534025054720020`). Use `/create_quick_vip_allocation` for ongoing changes. |
 | `LOCAL_TIMEZONE` | Yes | Timezone for human-readable expiry timestamps (e.g. `Australia/Sydney`). |
 | `ANNOUNCEMENT_MESSAGE_ID` | Optional | Reuse an existing Discord message for the control panel. |
 | `QUICK_VIP_ANNOUNCEMENT_MESSAGE_ID` | Optional | Reuse an existing Discord message for the Quick VIP control panel. |
@@ -76,7 +76,7 @@ All primary settings live in `config.jsonc` (JSON5 syntax). Environment variable
 | `MODERATOR_ROLE_ID` | Optional | Discord role ID treated as moderator for privileged commands such as `/assignvip`, `/set_vip_duration`, and `/game_server_message`. |
 | `VIP_TEMP_ROLE_ID`, `VIP_CLAIM_CHANNEL_ID` | Optional | Used by `/assignvip`. `VIP_TEMP_ROLE_ID` is a temporary Discord role that grants access to your VIP claim channel. `VIP_CLAIM_CHANNEL_ID` is the channel ID where the control panel lives (falls back to `CHANNEL_ID` if unset). |
 | `VIP_ASSIGN_LIMIT` | Optional | Weekly per-moderator cap for `/assignvip`. Defaults to `5` uses and resets every Monday at 01:00 in `LOCAL_TIMEZONE`. |
-| `FRONTLINE_STATE_DIR` | Optional | Directory used for runtime state such as limiter JSON files. Defaults to the app directory locally; set this to `/data` on Railway or in containers so cooldown state survives restarts. |
+| `FRONTLINE_STATE_DIR` | Optional | Directory used for runtime state such as limiter JSON files and Quick VIP allocations. Defaults to the app directory locally; set this to `/data` on Railway or in containers so allocation policy and cooldown state survive restarts. |
 | `COMMAND_GUILD_IDS` / `COMMAND_GUILD_ID` | Optional | Comma-separated guild IDs (or a single ID) to sync slash commands instantly to those servers. If unset, commands are synced globally (may take up to ~1 hour to propagate). |
 | `CRCON_HTTP_BASE_URL` | Yes | CRCON host (omit `/api`; the bot appends it automatically). |
 | `CRCON_HTTP_BEARER_TOKEN` | Yes\* | Pre-generated CRCON token. Required unless you supply username/password. |
@@ -94,7 +94,7 @@ The bot validates required settings on startup and exits with a clear error when
   CHANNEL_ID: 123456789012345678,
   QUICK_VIP_CHANNEL_ID: 234567890123456789,
   SWITCH_ME_CHANNEL_ID: 345678901234567890,
-  QUICK_VIP_ROLE_IDS: [1322175167685988403, 1440534025054720020, 345678901234567890, 456789012345678901],
+  QUICK_VIP_ROLE_IDS: [1322175167685988403, 1440534025054720020], // initial seed only; manage later with slash commands
   VIP_DURATION_HOURS: 24,
   LOCAL_TIMEZONE: "Australia/Sydney",
   FRONTLINE_STATE_DIR: "/data",
@@ -123,12 +123,26 @@ Admins can refresh the message at any time with `/repost_frontline_controls`.
 ### Quick VIP panel
 
 1. Users open the dedicated `QUICK_VIP_CHANNEL_ID` channel and press **Quick VIP (10 min)**.
-2. The user must hold either one of the legacy clan Quick VIP roles, the configured `MODERATOR_ROLE_ID`, or one of the configured `QUICK_VIP_ROLE_IDS`.
+2. The user must hold either the configured `MODERATOR_ROLE_ID` or a Discord role with a persisted Quick VIP allocation.
 3. They paste the target player's `player_id` from [https://hllrecords.com](https://hllrecords.com).
 4. The bot grants a fixed 10-minute VIP window starting from the current time.
-5. Users with legacy clan Quick VIP roles can use it up to 5 times per 24 hours, while the configured `MODERATOR_ROLE_ID` can use Quick VIP without a cooldown cap.
-6. Users with `QUICK_VIP_ROLE_IDS` can use it once every 48 hours. By default this includes the `MSU` role (`1322175167685988403`) and the `Randoms` role (`1440534025054720020`).
+5. Usage limits are controlled per Discord role with `/create_quick_vip_allocation role uses hours`.
+6. The configured `MODERATOR_ROLE_ID` can use Quick VIP without a cooldown cap.
 7. This does not add 10 minutes to an existing VIP total; it sets the expiration to 10 minutes from the moment the button is used.
+
+Quick VIP allocation policy is stored in `quick_vip_allocations.json` under `FRONTLINE_STATE_DIR`. In Railway/container deployments, set `FRONTLINE_STATE_DIR=/data` so the file is written to `/data/quick_vip_allocations.json`.
+
+Admin commands:
+
+1. `/create_quick_vip_allocation role uses hours` creates or updates a role allocation.
+2. `/delete_quick_vip_allocation role` removes a role allocation and its tracked usage.
+3. `/quick_vip_allocations` lists active role allocations.
+
+Startup migration runs only when `quick_vip_allocations.json` does not already exist:
+
+1. `QUICK_VIP_ROLE_IDS` are seeded as `1 use / 48 hours`. The built-in defaults are `MSU` (`1322175167685988403`) and `Randoms` (`1440534025054720020`).
+2. Legacy clan Quick VIP role names are resolved from connected Discord guilds and seeded as `5 uses / 24 hours` when matching roles are found.
+3. Existing old usage files are not converted because they did not record which role allocation consumed each use.
 
 Admins can refresh the Quick VIP panel at any time with `/repost_quick_vip_controls`.
 
@@ -177,7 +191,7 @@ Required CRCON API permissions for the bot account:
 
 - **Local / bare metal** - run `python frontline-pass.py` under your favorite supervisor (systemd, pm2, tmux).
 - **Docker / Compose** - use `docker compose up --build -d` with a populated `.env`. The compose stack persists runtime state in a named Docker volume mounted at `/data`.
-- **Railway** - the repo ships with `railway.toml` and a Dockerfile. Railway builds from the Dockerfile, so the image `CMD` is the runtime entrypoint. Set the required variables (see `.env.dist`) in the Railway dashboard/CLI before deploying—at minimum `DISCORD_TOKEN`, `VIP_DURATION_HOURS`, `CHANNEL_ID`, `LOCAL_TIMEZONE`, `CRCON_HTTP_BASE_URL`, and either `CRCON_HTTP_BEARER_TOKEN` or (`CRCON_HTTP_USERNAME` + `CRCON_HTTP_PASSWORD`). If you attach a Railway volume at `/data`, set `FRONTLINE_STATE_DIR=/data`; startup now validates that the directory is writable so Quick VIP cooldown state cannot silently fall back to ephemeral storage.
+- **Railway** - the repo ships with `railway.toml` and a Dockerfile. Railway builds from the Dockerfile, so the image `CMD` is the runtime entrypoint. Set the required variables (see `.env.dist`) in the Railway dashboard/CLI before deploying—at minimum `DISCORD_TOKEN`, `VIP_DURATION_HOURS`, `CHANNEL_ID`, `LOCAL_TIMEZONE`, `CRCON_HTTP_BASE_URL`, and either `CRCON_HTTP_BEARER_TOKEN` or (`CRCON_HTTP_USERNAME` + `CRCON_HTTP_PASSWORD`). If you attach a Railway volume at `/data`, set `FRONTLINE_STATE_DIR=/data`; startup now validates that the directory is writable so Quick VIP allocation policy and cooldown state cannot silently fall back to ephemeral storage.
 
 ## Quick Troubleshooting Checklist
 

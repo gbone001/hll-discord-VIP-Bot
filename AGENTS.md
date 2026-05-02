@@ -36,7 +36,7 @@ This repository is a Hell Let Loose Discord automation bot that grants temporary
 - `VipService` in `frontline-pass.py` handles VIP grant orchestration, expiration calculation, player VIP status lookups, and team message dispatch.
 - `AnnouncementManager` in `frontline-pass.py` handles persistent Discord control-panel message creation, refresh, repost, and cleanup.
 - `VipAssignLimiter` in `frontline-pass.py` handles weekly moderator assignment limits for `/assignvip`.
-- `RollingWindowLimiter` in `frontline-pass.py` handles rolling-window cooldown and quota behavior for Quick VIP usage.
+- `QuickVipAllocationStore` in `frontline-pass.py` handles persisted Quick VIP role allocations and rolling-window usage.
 
 ## Discord surfaces
 - Persistent button views: standard VIP claim and Quick VIP claim.
@@ -54,7 +54,7 @@ This repository is a Hell Let Loose Discord automation bot that grants temporary
 
 ## Events and workflows to handle
 - `vip_claim_requested`: user presses the main VIP button and submits a Player ID.
-- `quick_vip_requested`: authorized user presses the Quick VIP button and grants a fixed 10-minute VIP.
+- `quick_vip_requested`: authorized user with a persisted Quick VIP allocation presses the Quick VIP button and grants a fixed 10-minute VIP.
 - `vip_assigned_by_moderator`: moderator grants temporary Discord access so a member can claim VIP.
 - `vip_status_checked`: moderator or admin checks a player's current VIP expiration.
 - `team_message_requested`: moderator sends an in-game message to Axis, Allies, or Both.
