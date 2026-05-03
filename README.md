@@ -138,11 +138,19 @@ Admin commands:
 2. `/delete_quick_vip_allocation role` removes a role allocation and its tracked usage.
 3. `/quick_vip_allocations` lists active role allocations.
 
+Examples:
+
+1. `/create_quick_vip_allocation role:@Randoms uses:1 hours:48`
+2. `/create_quick_vip_allocation role:@ClanQuickVip uses:5 hours:24`
+3. `/delete_quick_vip_allocation role:@Randoms`
+
 Startup migration runs only when `quick_vip_allocations.json` does not already exist:
 
 1. `QUICK_VIP_ROLE_IDS` are seeded as `1 use / 48 hours`. The built-in defaults are `MSU` (`1322175167685988403`) and `Randoms` (`1440534025054720020`).
 2. Legacy clan Quick VIP role names are resolved from connected Discord guilds and seeded as `5 uses / 24 hours` when matching roles are found.
 3. Existing old usage files are not converted because they did not record which role allocation consumed each use.
+
+After the allocation file exists, `QUICK_VIP_ROLE_IDS` is no longer reapplied on each restart. Use the slash commands above for later changes so deleted allocations do not silently come back.
 
 Admins can refresh the Quick VIP panel at any time with `/repost_quick_vip_controls`.
 
