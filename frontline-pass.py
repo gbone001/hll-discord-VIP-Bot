@@ -332,6 +332,7 @@ class AppConfig:
     vip_temp_role_id: Optional[int] = None
     vip_claim_channel_id: Optional[int] = None
     vip_assign_limit: int = 5
+    command_guild_ids: Tuple[int, ...] = ()
 
     @property
     def vip_duration_label(self) -> str:
@@ -1136,6 +1137,11 @@ def load_config() -> AppConfig:
     moderator_role_id = optional_int("MODERATOR_ROLE_ID")
     vip_temp_role_id = optional_int("VIP_TEMP_ROLE_ID")
     vip_claim_channel_id = optional_int("VIP_CLAIM_CHANNEL_ID")
+    command_guild_ids = optional_int_list("COMMAND_GUILD_IDS")
+    if not command_guild_ids:
+        command_guild_id = optional_int("COMMAND_GUILD_ID")
+        if command_guild_id is not None:
+            command_guild_ids = (command_guild_id,)
     vip_assign_limit_raw = optional_int("VIP_ASSIGN_LIMIT")
     if vip_assign_limit_raw is None:
         vip_assign_limit = 5
@@ -1208,6 +1214,7 @@ def load_config() -> AppConfig:
         vip_temp_role_id=vip_temp_role_id,
         vip_claim_channel_id=vip_claim_channel_id,
         vip_assign_limit=vip_assign_limit,
+        command_guild_ids=command_guild_ids,
     )
 
 
@@ -2504,14 +2511,9 @@ class FrontlinePassBot(commands.Bot):
             self.switch_me_view = SwitchMeView(self, self.config, self.vip_service)
             self.add_view(self.switch_me_view)
         await self._register_commands()
-        guild_ids_raw = os.getenv("COMMAND_GUILD_IDS") or os.getenv("COMMAND_GUILD_ID")
+        guild_ids = self.config.command_guild_ids
         synced_any_guild = False
-        if guild_ids_raw:
-            try:
-                guild_ids = [int(x.strip()) for x in guild_ids_raw.split(",") if x.strip()]
-            except ValueError:
-                logging.warning("Invalid COMMAND_GUILD_IDS value %r; falling back to global sync.", guild_ids_raw)
-                guild_ids = []
+        if guild_ids:
             for gid in guild_ids:
                 try:
                     guild_obj = discord.Object(id=gid)

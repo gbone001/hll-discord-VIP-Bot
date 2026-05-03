@@ -1376,6 +1376,90 @@ class LoadConfigTests(unittest.TestCase):
                     else:
                         os.environ[key] = value
 
+    def test_load_config_reads_command_guild_ids_from_env(self) -> None:
+        original_file = frontline_pass.__file__
+        with WorkspaceTemporaryDirectory() as tmpdir:
+            temp_root = pathlib.Path(tmpdir)
+            fake_module_path = temp_root / "frontline-pass.py"
+            fake_module_path.write_text("# test module marker\n", encoding="utf-8")
+
+            required_env = {
+                "DISCORD_TOKEN": "token",
+                "CHANNEL_ID": "123",
+                "VIP_DURATION_HOURS": "72",
+                "LOCAL_TIMEZONE": "Australia/Sydney",
+                "CRCON_HTTP_BASE_URL": "https://example.com",
+                "CRCON_HTTP_BEARER_TOKEN": "bearer-token",
+                "COMMAND_GUILD_IDS": "111,222",
+            }
+            removed_env = {
+                "FRONTLINE_STATE_DIR": os.environ.get("FRONTLINE_STATE_DIR"),
+                "FRONTLINE_CONFIG_PATH": os.environ.get("FRONTLINE_CONFIG_PATH"),
+                "COMMAND_GUILD_ID": os.environ.get("COMMAND_GUILD_ID"),
+            }
+
+            try:
+                frontline_pass.__file__ = str(fake_module_path)
+                for key, value in required_env.items():
+                    os.environ[key] = value
+                for key in removed_env:
+                    os.environ.pop(key, None)
+
+                config = frontline_pass.load_config()
+
+                self.assertEqual(config.command_guild_ids, (111, 222))
+            finally:
+                frontline_pass.__file__ = original_file
+                for key in required_env:
+                    os.environ.pop(key, None)
+                for key, value in removed_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+    def test_load_config_falls_back_to_single_command_guild_id(self) -> None:
+        original_file = frontline_pass.__file__
+        with WorkspaceTemporaryDirectory() as tmpdir:
+            temp_root = pathlib.Path(tmpdir)
+            fake_module_path = temp_root / "frontline-pass.py"
+            fake_module_path.write_text("# test module marker\n", encoding="utf-8")
+
+            required_env = {
+                "DISCORD_TOKEN": "token",
+                "CHANNEL_ID": "123",
+                "VIP_DURATION_HOURS": "72",
+                "LOCAL_TIMEZONE": "Australia/Sydney",
+                "CRCON_HTTP_BASE_URL": "https://example.com",
+                "CRCON_HTTP_BEARER_TOKEN": "bearer-token",
+                "COMMAND_GUILD_ID": "333",
+            }
+            removed_env = {
+                "FRONTLINE_STATE_DIR": os.environ.get("FRONTLINE_STATE_DIR"),
+                "FRONTLINE_CONFIG_PATH": os.environ.get("FRONTLINE_CONFIG_PATH"),
+                "COMMAND_GUILD_IDS": os.environ.get("COMMAND_GUILD_IDS"),
+            }
+
+            try:
+                frontline_pass.__file__ = str(fake_module_path)
+                for key, value in required_env.items():
+                    os.environ[key] = value
+                for key in removed_env:
+                    os.environ.pop(key, None)
+
+                config = frontline_pass.load_config()
+
+                self.assertEqual(config.command_guild_ids, (333,))
+            finally:
+                frontline_pass.__file__ = original_file
+                for key in required_env:
+                    os.environ.pop(key, None)
+                for key, value in removed_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
 
 if __name__ == "__main__":
     unittest.main()
