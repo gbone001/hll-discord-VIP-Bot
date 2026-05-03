@@ -29,7 +29,12 @@ logging.basicConfig(level=logging.INFO)
 
 ANNOUNCEMENT_TITLE = "VIP Control Center"
 QUICK_VIP_ANNOUNCEMENT_TITLE = "Quick VIP Control Center"
+SWITCH_ME_ANNOUNCEMENT_TITLE = "Switch Me Control Center"
 QUICK_VIP_DURATION_MINUTES = 10
+DEFAULT_QUICK_VIP_ROLE_IDS = (
+    1322175167685988403,  # MSU
+    1440534025054720020,  # Randoms
+)
 LEGACY_QUICK_VIP_GIVER_ROLE_NAMES = {
     "MSU-Quick-VIP-Giver",
     "ROFS-Quick-VIP-Giver",
@@ -88,10 +93,21 @@ def build_announcement_embed(
 def build_quick_vip_announcement_embed(
     config: AppConfig,
     _last_grant_at: Optional[datetime],
+    allocations: Optional[List[QuickVipAllocation]] = None,
 ) -> discord.Embed:
+    allocation_lines: List[str] = []
+    for allocation in allocations or []:
+        grant_label = "use" if allocation.uses == 1 else "uses"
+        allocation_lines.append(f"<@&{allocation.role_id}>: {allocation.uses} {grant_label} per {allocation.window_hours} hours")
+    allocation_text = "\n".join(allocation_lines) if allocation_lines else "No role allocations configured."
+    moderator_text = (
+        f"<@&{config.moderator_role_id}>: unlimited"
+        if config.moderator_role_id
+        else "No moderator role configured."
+    )
     description_lines = [
         "Use the button below to grant a fixed 10-minute VIP window.",
-        "Eligible users need either a legacy clan Quick VIP role, the configured moderator role, or a nominated Quick VIP role.",
+        "Eligible users need a configured Quick VIP allocation role or the configured moderator role.",
         "Paste the target player's player_id from https://hllrecords.com when prompted.",
         "This does not extend existing VIP. It sets the target to 10 minutes from now.",
     ]
@@ -102,18 +118,30 @@ def build_quick_vip_announcement_embed(
         timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="Duration", value=f"{QUICK_VIP_DURATION_MINUTES} minutes", inline=True)
-    embed.add_field(
-        name="Nominated Roles",
-        value=f"{QUICK_VIP_GIVER_LIMIT_PER_WINDOW} use per {QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS} hours",
-        inline=True,
-    )
-    embed.add_field(
-        name="Legacy Clan / Moderator Role",
-        value="Legacy clan roles: 5 uses per 24 hours\nModerator role: unlimited",
-        inline=True,
+    embed.add_field(name="Role Allocations", value=allocation_text[:1024], inline=False)
+    embed.add_field(name="Moderator Role", value=moderator_text, inline=True)
+    embed.add_field(name="Local Timezone", value=config.timezone_name, inline=True)
+    embed.set_footer(text="Eligibility is controlled by persisted Quick VIP role allocations.")
+    return embed
+
+
+def build_switch_me_announcement_embed(
+    config: AppConfig,
+    _last_switch_at: Optional[datetime],
+) -> discord.Embed:
+    description_lines = [
+        "Use the button below to request a move to the opposite team.",
+        'When registering you need to paste your player_id string, for example "2805d5bbe14b6ec432f82e5cb859d012", from https://hllrecords.com.',
+        "The switch only succeeds if you are currently in-game and the opposite team has space available.",
+    ]
+    embed = discord.Embed(
+        title=SWITCH_ME_ANNOUNCEMENT_TITLE,
+        description="\n".join(description_lines),
+        color=0xF1C40F,
+        timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="Local Timezone", value=config.timezone_name, inline=True)
-    embed.set_footer(text="Eligibility is controlled by legacy clan roles, the moderator role, or nominated Discord roles.")
+    embed.set_footer(text="Buttons stay active across restarts.")
     return embed
 
 
@@ -296,12 +324,15 @@ class AppConfig:
     announcement_message_id: Optional[int] = None
     quick_vip_channel_id: Optional[int] = None
     quick_vip_announcement_message_id: Optional[int] = None
-    quick_vip_role_ids: Tuple[int, ...] = ()
+    switch_me_channel_id: Optional[int] = None
+    switch_me_announcement_message_id: Optional[int] = None
+    quick_vip_role_ids: Tuple[int, ...] = DEFAULT_QUICK_VIP_ROLE_IDS
     http_credentials: Optional[HttpCredentials] = None
     moderator_role_id: Optional[int] = None
     vip_temp_role_id: Optional[int] = None
     vip_claim_channel_id: Optional[int] = None
     vip_assign_limit: int = 5
+    command_guild_ids: Tuple[int, ...] = ()
 
     @property
     def vip_duration_label(self) -> str:
@@ -324,9 +355,31 @@ class RollingWindowUsageResult:
 
 
 @dataclass(frozen=True)
+class QuickVipAllocation:
+    role_id: int
+    uses: int
+    window_hours: int
+    created_at: Optional[str] = None
+    created_by: Optional[int] = None
+    updated_at: Optional[str] = None
+    updated_by: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class QuickVipAllocationUsageResult:
+    allowed: bool
+    used: int
+    limit: int
+    role_id: int
+    window_hours: int
+    next_available_at: Optional[datetime] = None
+
+
+@dataclass(frozen=True)
 class QuickVipEligibility:
     allowed: bool
-    limiter: Optional["RollingWindowLimiter"] = None
+    allocation: Optional[QuickVipAllocation] = None
+    usage: Optional[QuickVipAllocationUsageResult] = None
     policy_name: str = ""
     limit: int = 0
     window_hours: int = 0
@@ -474,6 +527,338 @@ class RollingWindowLimiter:
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=timezone.utc)
         return parsed
+
+
+class QuickVipAllocationStore:
+    def __init__(self, *, storage_path: Path) -> None:
+        self._storage_path = storage_path
+        self._lock = asyncio.Lock()
+        self._loaded_existing_state = False
+        self._state: Dict[str, Any] = {
+            "version": 1,
+            "allocations": {},
+            "usage": {},
+        }
+        self._load_state()
+
+    @property
+    def loaded_existing_state(self) -> bool:
+        return self._loaded_existing_state
+
+    async def list_allocations(self) -> List[QuickVipAllocation]:
+        async with self._lock:
+            allocations: List[QuickVipAllocation] = []
+            for value in self._state.get("allocations", {}).values():
+                allocation = self._allocation_from_dict(value)
+                if allocation is not None:
+                    allocations.append(allocation)
+            return sorted(allocations, key=lambda item: item.role_id)
+
+    async def upsert_allocation(
+        self,
+        *,
+        role_id: int,
+        uses: int,
+        window_hours: int,
+        actor_id: Optional[int],
+    ) -> QuickVipAllocation:
+        normalized_role_id = int(role_id)
+        normalized_uses = max(int(uses), 1)
+        normalized_window_hours = max(int(window_hours), 1)
+        async with self._lock:
+            now = datetime.now(timezone.utc).isoformat()
+            allocations = self._state.setdefault("allocations", {})
+            existing = allocations.get(str(normalized_role_id))
+            if isinstance(existing, dict):
+                created_at = existing.get("created_at") if isinstance(existing.get("created_at"), str) else now
+                created_by = existing.get("created_by") if isinstance(existing.get("created_by"), int) else actor_id
+            else:
+                created_at = now
+                created_by = actor_id
+
+            payload = {
+                "role_id": normalized_role_id,
+                "uses": normalized_uses,
+                "window_hours": normalized_window_hours,
+                "created_at": created_at,
+                "created_by": created_by,
+                "updated_at": now,
+                "updated_by": actor_id,
+            }
+            allocations[str(normalized_role_id)] = payload
+            self._save_state()
+            allocation = self._allocation_from_dict(payload)
+            assert allocation is not None
+            return allocation
+
+    async def delete_allocation(self, role_id: int) -> bool:
+        key = str(int(role_id))
+        async with self._lock:
+            allocations = self._state.setdefault("allocations", {})
+            existed = key in allocations
+            allocations.pop(key, None)
+            usage = self._state.setdefault("usage", {})
+            if isinstance(usage, dict):
+                usage.pop(key, None)
+            if existed:
+                self._save_state()
+            return existed
+
+    async def get_eligibility(self, *, role_ids: Tuple[int, ...], user_id: int) -> QuickVipEligibility:
+        async with self._lock:
+            allocations = self._state.get("allocations", {})
+            if not isinstance(allocations, dict):
+                return QuickVipEligibility(allowed=False)
+
+            matches: List[Tuple[QuickVipAllocation, QuickVipAllocationUsageResult]] = []
+            changed = False
+            for role_id in role_ids:
+                allocation = self._allocation_from_dict(allocations.get(str(int(role_id))))
+                if allocation is None:
+                    continue
+                usage, pruned = self._get_usage_locked(allocation, user_id)
+                changed = changed or pruned
+                matches.append((allocation, usage))
+
+            if changed:
+                self._save_state()
+
+            if not matches:
+                return QuickVipEligibility(allowed=False)
+
+            available = [(allocation, usage) for allocation, usage in matches if usage.allowed]
+            if available:
+                allocation, usage = max(
+                    available,
+                    key=lambda item: (
+                        item[1].limit - item[1].used,
+                        -item[0].window_hours,
+                        -item[0].role_id,
+                    ),
+                )
+            else:
+                allocation, usage = min(
+                    matches,
+                    key=lambda item: item[1].next_available_at or datetime.max.replace(tzinfo=timezone.utc),
+                )
+
+            return QuickVipEligibility(
+                allowed=True,
+                allocation=allocation,
+                usage=usage,
+                policy_name=f"role <@&{allocation.role_id}>",
+                limit=allocation.uses,
+                window_hours=allocation.window_hours,
+            )
+
+    async def try_consume(self, *, role_id: int, user_id: int) -> QuickVipAllocationUsageResult:
+        async with self._lock:
+            allocations = self._state.get("allocations", {})
+            allocation = self._allocation_from_dict(allocations.get(str(int(role_id))) if isinstance(allocations, dict) else None)
+            if allocation is None:
+                raise ValueError(f"Quick VIP allocation for role {role_id} does not exist")
+
+            usage, changed = self._get_usage_locked(allocation, user_id)
+            if not usage.allowed:
+                if changed:
+                    self._save_state()
+                return usage
+
+            usage_map = self._state.setdefault("usage", {})
+            role_usage = usage_map.setdefault(str(allocation.role_id), {})
+            if not isinstance(role_usage, dict):
+                role_usage = {}
+                usage_map[str(allocation.role_id)] = role_usage
+            entries = role_usage.setdefault(str(user_id), [])
+            if not isinstance(entries, list):
+                entries = []
+                role_usage[str(user_id)] = entries
+            entries.append(datetime.now(timezone.utc).isoformat())
+            self._save_state()
+            return QuickVipAllocationUsageResult(
+                allowed=True,
+                used=usage.used + 1,
+                limit=allocation.uses,
+                role_id=allocation.role_id,
+                window_hours=allocation.window_hours,
+            )
+
+    def seed_allocation_if_missing(self, *, role_id: int, uses: int, window_hours: int) -> bool:
+        key = str(int(role_id))
+        allocations = self._state.setdefault("allocations", {})
+        if key in allocations:
+            return False
+        now = datetime.now(timezone.utc).isoformat()
+        allocations[key] = {
+            "role_id": int(role_id),
+            "uses": max(int(uses), 1),
+            "window_hours": max(int(window_hours), 1),
+            "created_at": now,
+            "created_by": None,
+            "updated_at": now,
+            "updated_by": None,
+        }
+        self._save_state()
+        return True
+
+    def _get_usage_locked(
+        self,
+        allocation: QuickVipAllocation,
+        user_id: int,
+    ) -> Tuple[QuickVipAllocationUsageResult, bool]:
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=allocation.window_hours)
+        usage_map = self._state.setdefault("usage", {})
+        if not isinstance(usage_map, dict):
+            self._state["usage"] = {}
+            usage_map = self._state["usage"]
+        role_usage = usage_map.setdefault(str(allocation.role_id), {})
+        if not isinstance(role_usage, dict):
+            role_usage = {}
+            usage_map[str(allocation.role_id)] = role_usage
+
+        key = str(user_id)
+        entries = role_usage.setdefault(key, [])
+        changed = False
+        if not isinstance(entries, list):
+            entries = []
+            role_usage[key] = entries
+            changed = True
+
+        filtered: List[str] = []
+        for value in entries:
+            parsed = RollingWindowLimiter._parse_datetime(value)
+            if parsed is None:
+                changed = True
+                continue
+            if parsed > cutoff:
+                filtered.append(value)
+            else:
+                changed = True
+        if len(filtered) != len(entries):
+            if filtered:
+                role_usage[key] = filtered
+            else:
+                role_usage.pop(key, None)
+            changed = True
+
+        used = len(filtered)
+        next_available = None
+        if used >= allocation.uses and filtered:
+            oldest = RollingWindowLimiter._parse_datetime(filtered[0])
+            next_available = oldest + timedelta(hours=allocation.window_hours) if oldest else None
+        return (
+            QuickVipAllocationUsageResult(
+                allowed=used < allocation.uses,
+                used=used,
+                limit=allocation.uses,
+                role_id=allocation.role_id,
+                window_hours=allocation.window_hours,
+                next_available_at=next_available,
+            ),
+            changed,
+        )
+
+    def _load_state(self) -> None:
+        try:
+            with self._storage_path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except FileNotFoundError:
+            return
+        except Exception as exc:
+            logging.exception("Failed to load Quick VIP allocation state from %s", self._storage_path)
+            raise RuntimeError(f"Failed to load Quick VIP allocation state from {self._storage_path}: {exc}") from exc
+
+        allocations_raw = data.get("allocations") if isinstance(data, dict) else {}
+        usage_raw = data.get("usage") if isinstance(data, dict) else {}
+        allocations: Dict[str, Any] = {}
+        if isinstance(allocations_raw, dict):
+            for key, value in allocations_raw.items():
+                allocation = self._allocation_from_dict(value)
+                if allocation is None:
+                    continue
+                allocations[str(allocation.role_id)] = {
+                    "role_id": allocation.role_id,
+                    "uses": allocation.uses,
+                    "window_hours": allocation.window_hours,
+                    "created_at": allocation.created_at,
+                    "created_by": allocation.created_by,
+                    "updated_at": allocation.updated_at,
+                    "updated_by": allocation.updated_by,
+                }
+
+        usage: Dict[str, Dict[str, List[str]]] = {}
+        if isinstance(usage_raw, dict):
+            for role_id, user_usage in usage_raw.items():
+                try:
+                    role_key = str(int(role_id))
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(user_usage, dict):
+                    continue
+                cleaned_role_usage: Dict[str, List[str]] = {}
+                for user_id, timestamps in user_usage.items():
+                    if not isinstance(timestamps, list):
+                        continue
+                    cleaned = [
+                        value
+                        for value in timestamps
+                        if isinstance(value, str) and RollingWindowLimiter._parse_datetime(value)
+                    ]
+                    if cleaned:
+                        cleaned_role_usage[str(user_id)] = cleaned
+                if cleaned_role_usage:
+                    usage[role_key] = cleaned_role_usage
+
+        self._state = {
+            "version": 1,
+            "allocations": allocations,
+            "usage": usage,
+        }
+        self._loaded_existing_state = True
+
+    def _save_state(self) -> None:
+        try:
+            self._storage_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._storage_path.open("w", encoding="utf-8") as handle:
+                json.dump(self._state, handle)
+        except Exception as exc:
+            logging.exception("Failed to persist Quick VIP allocation state to %s", self._storage_path)
+            raise RuntimeError(f"Failed to persist Quick VIP allocation state to {self._storage_path}: {exc}") from exc
+
+    @staticmethod
+    def _allocation_from_dict(value: Any) -> Optional[QuickVipAllocation]:
+        if not isinstance(value, dict):
+            return None
+        try:
+            role_id = int(value.get("role_id"))
+            uses = int(value.get("uses"))
+            window_hours = int(value.get("window_hours"))
+        except (TypeError, ValueError):
+            return None
+        if role_id <= 0 or uses <= 0 or window_hours <= 0:
+            return None
+        created_by_raw = value.get("created_by")
+        updated_by_raw = value.get("updated_by")
+        try:
+            created_by = int(created_by_raw) if created_by_raw is not None else None
+        except (TypeError, ValueError):
+            created_by = None
+        try:
+            updated_by = int(updated_by_raw) if updated_by_raw is not None else None
+        except (TypeError, ValueError):
+            updated_by = None
+        created_at = value.get("created_at") if isinstance(value.get("created_at"), str) else None
+        updated_at = value.get("updated_at") if isinstance(value.get("updated_at"), str) else None
+        return QuickVipAllocation(
+            role_id=role_id,
+            uses=uses,
+            window_hours=window_hours,
+            created_at=created_at,
+            created_by=created_by,
+            updated_at=updated_at,
+            updated_by=updated_by,
+        )
 
 
 class VipAssignLimiter:
@@ -746,10 +1131,17 @@ def load_config() -> AppConfig:
     announcement_message_id = optional_int("ANNOUNCEMENT_MESSAGE_ID")
     quick_vip_channel_id = optional_int("QUICK_VIP_CHANNEL_ID")
     quick_vip_announcement_message_id = optional_int("QUICK_VIP_ANNOUNCEMENT_MESSAGE_ID")
+    switch_me_channel_id = optional_int("SWITCH_ME_CHANNEL_ID")
+    switch_me_announcement_message_id = optional_int("SWITCH_ME_ANNOUNCEMENT_MESSAGE_ID")
     quick_vip_role_ids = optional_int_list("QUICK_VIP_ROLE_IDS")
     moderator_role_id = optional_int("MODERATOR_ROLE_ID")
     vip_temp_role_id = optional_int("VIP_TEMP_ROLE_ID")
     vip_claim_channel_id = optional_int("VIP_CLAIM_CHANNEL_ID")
+    command_guild_ids = optional_int_list("COMMAND_GUILD_IDS")
+    if not command_guild_ids:
+        command_guild_id = optional_int("COMMAND_GUILD_ID")
+        if command_guild_id is not None:
+            command_guild_ids = (command_guild_id,)
     vip_assign_limit_raw = optional_int("VIP_ASSIGN_LIMIT")
     if vip_assign_limit_raw is None:
         vip_assign_limit = 5
@@ -814,12 +1206,15 @@ def load_config() -> AppConfig:
         announcement_message_id=announcement_message_id,
         quick_vip_channel_id=quick_vip_channel_id,
         quick_vip_announcement_message_id=quick_vip_announcement_message_id,
-        quick_vip_role_ids=quick_vip_role_ids,
+        switch_me_channel_id=switch_me_channel_id,
+        switch_me_announcement_message_id=switch_me_announcement_message_id,
+        quick_vip_role_ids=quick_vip_role_ids or DEFAULT_QUICK_VIP_ROLE_IDS,
         http_credentials=http_credentials,
         moderator_role_id=moderator_role_id,
         vip_temp_role_id=vip_temp_role_id,
         vip_claim_channel_id=vip_claim_channel_id,
         vip_assign_limit=vip_assign_limit,
+        command_guild_ids=command_guild_ids,
     )
 
 
@@ -1071,6 +1466,72 @@ class VipHttpClient:
                 players.append(player)
         return players
 
+    def get_detailed_players(self) -> List[Dict[str, Any]]:
+        try:
+            response = self._request_with_reauth("GET", "get_detailed_players")
+        except requests.exceptions.RequestException as exc:
+            raise VipHTTPError(f"HTTP API request failed: {exc}") from exc
+
+        if response.status_code != 200:
+            raise VipHTTPError(
+                f"get_detailed_players failed with status {response.status_code}: {response.text}"
+            )
+
+        data = self._parse_json(response)
+        if data.get("failed"):
+            raise VipHTTPError(f"get_detailed_players reported failure: {data.get('error') or data}")
+
+        result = data.get("result") or {}
+        if not isinstance(result, dict):
+            raise VipHTTPError("get_detailed_players returned an unexpected result format.")
+
+        players_raw = result.get("players") or {}
+        if not isinstance(players_raw, dict):
+            raise VipHTTPError("get_detailed_players returned an unexpected players format.")
+
+        players: List[Dict[str, Any]] = []
+        for player in players_raw.values():
+            if isinstance(player, dict):
+                players.append(player)
+        return players
+
+    def get_gamestate(self) -> Dict[str, Any]:
+        try:
+            response = self._request_with_reauth("GET", "get_gamestate")
+        except requests.exceptions.RequestException as exc:
+            raise VipHTTPError(f"HTTP API request failed: {exc}") from exc
+
+        if response.status_code != 200:
+            raise VipHTTPError(f"get_gamestate failed with status {response.status_code}: {response.text}")
+
+        data = self._parse_json(response)
+        if data.get("failed"):
+            raise VipHTTPError(f"get_gamestate reported failure: {data.get('error') or data}")
+        result = data.get("result")
+        if result is None:
+            return {}
+        if not isinstance(result, dict):
+            raise VipHTTPError("get_gamestate returned an unexpected result format.")
+        return result
+
+    def switch_player_now(self, player_id: str) -> Dict[str, Any]:
+        payload = {"player_id": player_id}
+
+        try:
+            response = self._request_with_reauth("POST", "switch_player_now", json_payload=payload)
+        except requests.exceptions.RequestException as exc:
+            raise VipHTTPError(f"HTTP API request failed: {exc}") from exc
+
+        if response.status_code != 200:
+            raise VipHTTPError(
+                f"switch_player_now failed with status {response.status_code}: {response.text}"
+            )
+
+        data = self._parse_json(response)
+        if data.get("failed"):
+            raise VipHTTPError(f"switch_player_now reported failure: {data.get('error') or data}")
+        return data
+
     def message_player(
         self,
         player_id: str,
@@ -1164,6 +1625,16 @@ class TeamMessageDispatchResult:
     attempted: int
     sent: int
     failed: int
+
+
+@dataclass(frozen=True)
+class TeamSwitchResult:
+    player_id: str
+    current_team: str
+    target_team: str
+    switched: bool
+    detail: str
+    status_lines: List[str]
 
 
 @dataclass(frozen=True)
@@ -1300,6 +1771,49 @@ class VipService:
             failed=failed,
         )
 
+    def switch_player_to_opposite_team(
+        self,
+        player_id: str,
+        requester_display_name: str,
+    ) -> TeamSwitchResult:
+        players = self._http_client.get_detailed_players()
+        player = self._find_player(players, player_id)
+        if player is None:
+            raise VipHTTPError("Player was not found in the current server player list.")
+
+        current_team = self._extract_team_name(player)
+        if current_team not in {"axis", "allies"}:
+            raise VipHTTPError("Player is not currently assigned to Axis or Allies.")
+
+        target_team = "allies" if current_team == "axis" else "axis"
+        gamestate = self._http_client.get_gamestate()
+        target_count = self._get_team_player_count(gamestate, target_team)
+        if target_count >= 50:
+            raise VipHTTPError(
+                f"Cannot switch player because the {target_team.capitalize()} team is full ({target_count}/50)."
+            )
+
+        response = self._http_client.switch_player_now(player_id)
+        message: Any = response.get("result")
+        if isinstance(message, dict):
+            message = message.get("result") or message
+        if message is None:
+            message = "HTTP API switch_player_now succeeded."
+        detail = str(message)
+        return TeamSwitchResult(
+            player_id=player_id,
+            current_team=current_team,
+            target_team=target_team,
+            switched=True,
+            detail=detail,
+            status_lines=[
+                f"Requested by {requester_display_name}",
+                f"Current team: {current_team.capitalize()}",
+                f"Target team: {target_team.capitalize()}",
+                f"HTTP API: {detail}",
+            ],
+        )
+
     def _determine_extended_expiration(
         self,
         player_id: str,
@@ -1317,11 +1831,8 @@ class VipService:
 
     @staticmethod
     def _extract_latest_vip_expiration(profile: Dict[str, Any]) -> Optional[datetime]:
-        vips = profile.get("vips") if isinstance(profile, dict) else None
-        if not isinstance(vips, list):
-            return None
         latest: Optional[datetime] = None
-        for entry in vips:
+        for entry in VipService._iter_vip_entries(profile):
             if not isinstance(entry, dict):
                 continue
             expiration_str = entry.get("expiration")
@@ -1332,6 +1843,45 @@ class VipService:
             if latest is None or expiration_utc > latest:
                 latest = expiration_utc
         return latest
+
+    @staticmethod
+    def _iter_vip_entries(profile: Any) -> List[Dict[str, Any]]:
+        if not isinstance(profile, dict):
+            return []
+
+        vip_entries: List[Dict[str, Any]] = []
+        candidate_keys = (
+            "vips",
+            "vip",
+            "player_vip",
+            "active_vip",
+            "current_vip",
+        )
+        nested_container_keys = (
+            "player",
+            "profile",
+            "player_profile",
+            "result",
+            "data",
+        )
+
+        for key in candidate_keys:
+            vip_entries.extend(VipService._normalize_vip_entries(profile.get(key)))
+
+        for key in nested_container_keys:
+            nested_value = profile.get(key)
+            if isinstance(nested_value, dict):
+                vip_entries.extend(VipService._iter_vip_entries(nested_value))
+
+        return vip_entries
+
+    @staticmethod
+    def _normalize_vip_entries(value: Any) -> List[Dict[str, Any]]:
+        if isinstance(value, dict):
+            return [value]
+        if isinstance(value, list):
+            return [entry for entry in value if isinstance(entry, dict)]
+        return []
 
     @staticmethod
     def _parse_iso_datetime(value: Any) -> Optional[datetime]:
@@ -1401,6 +1951,40 @@ class VipService:
             if team_name == recipient and isinstance(player, dict):
                 filtered.append(player)
         return filtered
+
+    @staticmethod
+    def _find_player(players: Any, player_id: str) -> Optional[Dict[str, Any]]:
+        if not isinstance(players, list):
+            return None
+        normalized_player_id = player_id.strip()
+        for player in players:
+            if not isinstance(player, dict):
+                continue
+            candidate_id = VipService._extract_player_id(player)
+            if candidate_id == normalized_player_id:
+                return player
+        return None
+
+    @staticmethod
+    def _get_team_player_count(gamestate: Any, team_name: str) -> int:
+        if not isinstance(gamestate, dict):
+            raise VipHTTPError("get_gamestate returned an unexpected result format.")
+
+        if team_name == "axis":
+            candidate_keys = ("num_axis_players", "axis_players", "axis_count")
+        elif team_name == "allies":
+            candidate_keys = ("num_allied_players", "num_allies_players", "allied_players", "allies_count")
+        else:
+            raise VipHTTPError(f"Unsupported team name {team_name!r}.")
+
+        for key in candidate_keys:
+            value = gamestate.get(key)
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+
+        raise VipHTTPError(f"Could not determine current player count for the {team_name} team.")
 
 
 class VipRequestModal(Modal):
@@ -1640,7 +2224,7 @@ class QuickVipView(PersistentView):
             )
             schedule_ephemeral_cleanup(interaction)
             return
-        eligibility = self.bot.get_quick_vip_eligibility(member)
+        eligibility = await self.bot.get_quick_vip_eligibility(member)
         if not eligibility.allowed:
             await interaction.response.send_message(
                 "You do not have an approved Quick VIP role, so this control is unavailable to you.",
@@ -1651,8 +2235,8 @@ class QuickVipView(PersistentView):
 
         if eligibility.unlimited:
             usage = None
-        elif eligibility.limiter is not None:
-            usage = await eligibility.limiter.get_usage(member.id)
+        elif eligibility.usage is not None:
+            usage = eligibility.usage
         else:
             await interaction.response.send_message(
                 "Quick VIP is misconfigured for your role policy. Ask an admin to check the bot configuration.",
@@ -1716,8 +2300,11 @@ class QuickVipView(PersistentView):
             result.expiration_utc.strftime("%Y-%m-%d %H:%M:%S"),
             "; ".join(result.status_lines),
         )
-        if not eligibility.unlimited and eligibility.limiter is not None:
-            usage = await eligibility.limiter.try_consume(member.id)
+        if not eligibility.unlimited and eligibility.allocation is not None:
+            usage = await self.bot.quick_vip_allocation_store.try_consume(
+                role_id=eligibility.allocation.role_id,
+                user_id=member.id,
+            )
             if not usage.allowed:
                 logging.warning(
                     "Quick VIP grant for %s succeeded but usage recording was rejected due to a concurrent limit check for user %s under policy %s.",
@@ -1743,6 +2330,119 @@ class QuickVipView(PersistentView):
         schedule_ephemeral_cleanup(interaction, message=followup_message)
 
 
+class SwitchMeRequestModal(Modal):
+    def __init__(self, parent_view: "SwitchMeView") -> None:
+        super().__init__(title="Request Team Switch", custom_id="frontline-pass-switch-me-modal")
+        self._parent_view = parent_view
+        self.player_id = TextInput(
+            label="HLL player_id",
+            placeholder=PLAYER_ID_PLACEHOLDER,
+            custom_id="frontline-pass-switch-me-player-id-input",
+            min_length=32,
+            max_length=32,
+            style=discord.TextStyle.short,
+        )
+        self.add_item(self.player_id)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self._parent_view.handle_modal_submission(interaction, self.player_id.value)
+
+
+class SwitchMeView(PersistentView):
+    def __init__(
+        self,
+        bot: "FrontlinePassBot",
+        config: AppConfig,
+        vip_service: VipService,
+    ) -> None:
+        super().__init__()
+        self.bot = bot
+        self.config = config
+        self.vip_service = vip_service
+
+    @discord.ui.button(
+        label="Switch Me",
+        style=ButtonStyle.secondary,
+        custom_id="frontline-pass-switch-me",
+    )
+    async def switch_me_button(self, interaction: discord.Interaction, _: Button) -> None:
+        modal = SwitchMeRequestModal(self)
+        try:
+            await interaction.response.send_modal(modal)
+        except discord.HTTPException:
+            logging.exception("Failed to open Switch Me modal for %s", interaction.user.id)
+            error_message = "I couldn't open the Switch Me form. Please try again shortly."
+            if interaction.response.is_done():
+                followup = await interaction.followup.send(error_message, ephemeral=True, wait=True)
+                schedule_ephemeral_cleanup(interaction, message=followup)
+            else:
+                await interaction.response.send_message(error_message, ephemeral=True)
+                schedule_ephemeral_cleanup(interaction)
+
+    async def handle_modal_submission(self, interaction: discord.Interaction, player_id: str) -> None:
+        player_id = player_id.strip()
+        if not player_id:
+            await interaction.response.send_message("player_id cannot be empty.", ephemeral=True)
+            schedule_ephemeral_cleanup(interaction)
+            return
+
+        if len(player_id) != 32:
+            await interaction.response.send_message(
+                "player_id must be a 32-character string copied from https://hllrecords.com.",
+                ephemeral=True,
+            )
+            schedule_ephemeral_cleanup(interaction)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            result = await asyncio.to_thread(
+                self.vip_service.switch_player_to_opposite_team,
+                player_id,
+                interaction.user.display_name,
+            )
+        except VipHTTPError as exc:
+            logging.exception("Failed to switch player %s to the opposite team", player_id)
+            followup_message = await interaction.followup.send(
+                f"Error: team switch could not be completed: {exc}",
+                ephemeral=True,
+                wait=True,
+            )
+            schedule_ephemeral_cleanup(interaction, message=followup_message)
+            return
+        except Exception as exc:  # pragma: no cover
+            logging.exception("Unexpected error while switching player %s: %s", player_id, exc)
+            followup_message = await interaction.followup.send(
+                "An unexpected error occurred while switching teams.",
+                ephemeral=True,
+                wait=True,
+            )
+            schedule_ephemeral_cleanup(interaction, message=followup_message)
+            return
+
+        logging.info(
+            "Switched player %s from %s to %s (%s)",
+            result.player_id,
+            result.current_team,
+            result.target_team,
+            "; ".join(result.status_lines),
+        )
+        status_summary = "\n".join(f"- {line}" for line in result.status_lines)
+        message_body = (
+            "Team switch requested successfully.\n"
+            f"Linked player_id: {result.player_id}\n"
+            f"From: {result.current_team.capitalize()}\n"
+            f"To: {result.target_team.capitalize()}\n\n"
+            f"**Status**:\n{status_summary}"
+        )
+        followup_message = await interaction.followup.send(
+            message_body,
+            ephemeral=True,
+            wait=True,
+        )
+        schedule_ephemeral_cleanup(interaction, message=followup_message)
+
+
 class FrontlinePassBot(commands.Bot):
     def __init__(self, config: AppConfig, vip_service: VipService) -> None:
         intents = discord.Intents.default()
@@ -1756,6 +2456,7 @@ class FrontlinePassBot(commands.Bot):
             title=ANNOUNCEMENT_TITLE,
         )
         self.quick_vip_announcement_manager: Optional[AnnouncementManager] = None
+        self.switch_me_announcement_manager: Optional[AnnouncementManager] = None
         if config.quick_vip_channel_id:
             self.quick_vip_announcement_manager = AnnouncementManager(
                 config,
@@ -1763,8 +2464,16 @@ class FrontlinePassBot(commands.Bot):
                 announcement_message_id=config.quick_vip_announcement_message_id,
                 title=QUICK_VIP_ANNOUNCEMENT_TITLE,
             )
+        if config.switch_me_channel_id:
+            self.switch_me_announcement_manager = AnnouncementManager(
+                config,
+                channel_id=config.switch_me_channel_id,
+                announcement_message_id=config.switch_me_announcement_message_id,
+                title=SWITCH_ME_ANNOUNCEMENT_TITLE,
+            )
         self.persistent_view: Optional[CombinedView] = None
         self.quick_vip_view: Optional[QuickVipView] = None
+        self.switch_me_view: Optional[SwitchMeView] = None
         self._vip_duration_hours = config.vip_duration_hours
         self._last_grant_utc: Optional[datetime] = None
         limiter_state_path = config.state_directory / "vip_assign_usage.json"
@@ -1773,18 +2482,13 @@ class FrontlinePassBot(commands.Bot):
             default_limit=config.vip_assign_limit,
             storage_path=limiter_state_path,
         )
-        quick_vip_limiter_path = config.state_directory / "quick_vip_role_usage.json"
-        self.quick_vip_giver_limiter = RollingWindowLimiter(
-            window=timedelta(hours=QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS),
-            default_limit=QUICK_VIP_GIVER_LIMIT_PER_WINDOW,
-            storage_path=quick_vip_limiter_path,
+        quick_vip_allocation_path = config.state_directory / "quick_vip_allocations.json"
+        self.quick_vip_allocation_store = QuickVipAllocationStore(
+            storage_path=quick_vip_allocation_path,
         )
-        legacy_quick_vip_limiter_path = config.state_directory / "quick_vip_legacy_role_usage.json"
-        self.legacy_quick_vip_giver_limiter = RollingWindowLimiter(
-            window=timedelta(hours=LEGACY_QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS),
-            default_limit=LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW,
-            storage_path=legacy_quick_vip_limiter_path,
-        )
+        self._should_seed_quick_vip_allocations = not self.quick_vip_allocation_store.loaded_existing_state
+        if self._should_seed_quick_vip_allocations:
+            self._seed_configured_quick_vip_allocations()
 
     @property
     def vip_duration_hours(self) -> float:
@@ -1803,15 +2507,13 @@ class FrontlinePassBot(commands.Bot):
         if self.quick_vip_announcement_manager:
             self.quick_vip_view = QuickVipView(self, self.config, self.vip_service)
             self.add_view(self.quick_vip_view)
+        if self.switch_me_announcement_manager:
+            self.switch_me_view = SwitchMeView(self, self.config, self.vip_service)
+            self.add_view(self.switch_me_view)
         await self._register_commands()
-        guild_ids_raw = os.getenv("COMMAND_GUILD_IDS") or os.getenv("COMMAND_GUILD_ID")
+        guild_ids = self.config.command_guild_ids
         synced_any_guild = False
-        if guild_ids_raw:
-            try:
-                guild_ids = [int(x.strip()) for x in guild_ids_raw.split(",") if x.strip()]
-            except ValueError:
-                logging.warning("Invalid COMMAND_GUILD_IDS value %r; falling back to global sync.", guild_ids_raw)
-                guild_ids = []
+        if guild_ids:
             for gid in guild_ids:
                 try:
                     guild_obj = discord.Object(id=gid)
@@ -1834,8 +2536,10 @@ class FrontlinePassBot(commands.Bot):
         logging.info("Bot is ready: %s", self.user)
         http_base = self.config.http_credentials.base_url if self.config.http_credentials else "unset"
         logging.info("HTTP API base=%s; current VIP duration=%.2f hours", http_base, self.vip_duration_hours)
+        self._seed_legacy_quick_vip_allocations_from_guilds()
         await self.refresh_announcement_message()
         await self.refresh_quick_vip_announcement_message()
+        await self.refresh_switch_me_announcement_message()
 
     async def refresh_announcement_message(self) -> None:
         if not self.persistent_view:
@@ -1853,7 +2557,20 @@ class FrontlinePassBot(commands.Bot):
         await self.quick_vip_announcement_manager.ensure(
             self,
             self.quick_vip_view,
-            build_quick_vip_announcement_embed(self.config, self.last_grant_time),
+            build_quick_vip_announcement_embed(
+                self.config,
+                self.last_grant_time,
+                await self.quick_vip_allocation_store.list_allocations(),
+            ),
+        )
+
+    async def refresh_switch_me_announcement_message(self) -> None:
+        if not self.switch_me_announcement_manager or not self.switch_me_view:
+            return
+        await self.switch_me_announcement_manager.ensure(
+            self,
+            self.switch_me_view,
+            build_switch_me_announcement_embed(self.config, self.last_grant_time),
         )
 
     def _user_has_moderator_privileges(self, user: discord.abc.User) -> bool:
@@ -1904,36 +2621,99 @@ class FrontlinePassBot(commands.Bot):
             return False
         return self.user_has_any_role_id(user, (moderator_role_id,))
 
-    def get_quick_vip_eligibility(self, user: discord.abc.User) -> QuickVipEligibility:
+    @staticmethod
+    def user_role_ids(user: discord.abc.User) -> Tuple[int, ...]:
+        if not hasattr(user, "roles"):
+            return ()
+        role_ids: List[int] = []
+        for role in getattr(user, "roles", []):
+            role_id = getattr(role, "id", None)
+            if isinstance(role_id, int):
+                role_ids.append(role_id)
+        return tuple(role_ids)
+
+    def _seed_configured_quick_vip_allocations(self) -> None:
+        for role_id in self.config.quick_vip_role_ids:
+            seeded = self.quick_vip_allocation_store.seed_allocation_if_missing(
+                role_id=role_id,
+                uses=QUICK_VIP_GIVER_LIMIT_PER_WINDOW,
+                window_hours=QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS,
+            )
+            if seeded:
+                logging.info(
+                    "Seeded Quick VIP allocation for configured role %s: %s use per %s hours",
+                    role_id,
+                    QUICK_VIP_GIVER_LIMIT_PER_WINDOW,
+                    QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS,
+                )
+
+    def _seed_legacy_quick_vip_allocations_from_guilds(self) -> None:
+        if not self._should_seed_quick_vip_allocations:
+            return
+        targets = {name.strip().lower() for name in LEGACY_QUICK_VIP_GIVER_ROLE_NAMES}
+        if not targets:
+            return
+        found_names: set[str] = set()
+        for guild in getattr(self, "guilds", []):
+            for role in getattr(guild, "roles", []):
+                role_name = getattr(role, "name", "")
+                if not isinstance(role_name, str):
+                    continue
+                normalized = role_name.strip().lower()
+                if normalized not in targets:
+                    continue
+                found_names.add(normalized)
+                role_id = getattr(role, "id", None)
+                if not isinstance(role_id, int):
+                    logging.warning("Legacy Quick VIP role %s has no usable Discord role ID.", role_name)
+                    continue
+                seeded = self.quick_vip_allocation_store.seed_allocation_if_missing(
+                    role_id=role_id,
+                    uses=LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW,
+                    window_hours=LEGACY_QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS,
+                )
+                if seeded:
+                    logging.info(
+                        "Seeded Quick VIP allocation for legacy role %s (%s): %s uses per %s hours",
+                        role_name,
+                        role_id,
+                        LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW,
+                        LEGACY_QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS,
+                    )
+        missing = sorted(targets - found_names)
+        if missing:
+            logging.warning(
+                "Legacy Quick VIP role name(s) not found in connected guilds and could not be migrated: %s",
+                ", ".join(missing),
+            )
+
+    async def get_quick_vip_eligibility(self, user: discord.abc.User) -> QuickVipEligibility:
         if self.user_has_moderator_role(user):
             return QuickVipEligibility(
                 allowed=True,
                 policy_name="moderator role",
                 unlimited=True,
             )
-        if self.user_has_legacy_quick_vip_role(user):
-            return QuickVipEligibility(
-                allowed=True,
-                limiter=self.legacy_quick_vip_giver_limiter,
-                policy_name="legacy clan Quick VIP roles",
-                limit=LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW,
-                window_hours=LEGACY_QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS,
-            )
-        if self.user_has_any_role_id(user, self.config.quick_vip_role_ids):
-            return QuickVipEligibility(
-                allowed=True,
-                limiter=self.quick_vip_giver_limiter,
-                policy_name="nominated Quick VIP roles",
-                limit=QUICK_VIP_GIVER_LIMIT_PER_WINDOW,
-                window_hours=QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS,
-            )
-        return QuickVipEligibility(allowed=False)
+        return await self.quick_vip_allocation_store.get_eligibility(
+            role_ids=self.user_role_ids(user),
+            user_id=getattr(user, "id", 0),
+        )
 
     async def set_vip_duration_hours(self, hours: float) -> None:
         self._vip_duration_hours = hours
         if self.persistent_view:
             self.persistent_view.refresh_vip_label()
         await self.refresh_announcement_message()
+
+    @staticmethod
+    def _format_quick_vip_allocations(allocations: List[QuickVipAllocation]) -> str:
+        if not allocations:
+            return "No Quick VIP allocations configured."
+        lines = []
+        for allocation in allocations:
+            grant_label = "use" if allocation.uses == 1 else "uses"
+            lines.append(f"<@&{allocation.role_id}>: {allocation.uses} {grant_label} per {allocation.window_hours} hours")
+        return "\n".join(lines)
 
     async def _register_commands(self) -> None:
         @self.tree.command(
@@ -2007,7 +2787,11 @@ class FrontlinePassBot(commands.Bot):
             message = await self.quick_vip_announcement_manager.ensure(
                 self,
                 self.quick_vip_view,
-                build_quick_vip_announcement_embed(self.config, self.last_grant_time),
+                build_quick_vip_announcement_embed(
+                    self.config,
+                    self.last_grant_time,
+                    await self.quick_vip_allocation_store.list_allocations(),
+                ),
                 force_new=True,
             )
             if message:
@@ -2020,6 +2804,50 @@ class FrontlinePassBot(commands.Bot):
             else:
                 followup_message = await interaction.followup.send(
                     "Unable to repost the Quick VIP controls. Check the bot logs for details.",
+                    ephemeral=True,
+                    wait=True,
+                )
+                schedule_ephemeral_cleanup(interaction, message=followup_message)
+
+        @self.tree.command(
+            name="repost_switch_me_controls",
+            description="Repost the Switch Me control panel.",
+        )
+        async def repost_switch_me_controls(interaction: discord.Interaction) -> None:
+            permissions = getattr(interaction.user, "guild_permissions", None)  # type: ignore[attr-defined]
+            if not permissions or not permissions.administrator:
+                await interaction.response.send_message(
+                    "You need administrator permissions to use this command.",
+                    ephemeral=True,
+                )
+                schedule_ephemeral_cleanup(interaction)
+                return
+
+            if not self.switch_me_announcement_manager or not self.switch_me_view:
+                await interaction.response.send_message(
+                    "Switch Me controls are not configured. Set SWITCH_ME_CHANNEL_ID first.",
+                    ephemeral=True,
+                )
+                schedule_ephemeral_cleanup(interaction)
+                return
+
+            await interaction.response.defer(ephemeral=True)
+            message = await self.switch_me_announcement_manager.ensure(
+                self,
+                self.switch_me_view,
+                build_switch_me_announcement_embed(self.config, self.last_grant_time),
+                force_new=True,
+            )
+            if message:
+                followup_message = await interaction.followup.send(
+                    f"Switch Me controls reposted successfully (message ID {message.id}).",
+                    ephemeral=True,
+                    wait=True,
+                )
+                schedule_ephemeral_cleanup(interaction, message=followup_message)
+            else:
+                followup_message = await interaction.followup.send(
+                    "Unable to repost the Switch Me controls. Check the bot logs for details.",
                     ephemeral=True,
                     wait=True,
                 )
@@ -2259,6 +3087,116 @@ class FrontlinePassBot(commands.Bot):
                 wait=True,
             )
             schedule_ephemeral_cleanup(interaction, message=followup_message)
+
+        @self.tree.command(
+            name="create_quick_vip_allocation",
+            description="Create or update Quick VIP usage for a Discord role.",
+        )
+        @app_commands.describe(
+            role="Discord role allowed to grant Quick VIP",
+            uses="Number of Quick VIP grants allowed in the rolling window",
+            hours="Rolling window length in hours",
+        )
+        async def create_quick_vip_allocation(
+            interaction: discord.Interaction,
+            role: discord.Role,
+            uses: int,
+            hours: int,
+        ) -> None:
+            if not self._user_has_moderator_privileges(interaction.user):
+                await interaction.response.send_message(
+                    "You need moderator permissions to use this command.",
+                    ephemeral=True,
+                )
+                schedule_ephemeral_cleanup(interaction)
+                return
+
+            if uses <= 0:
+                await interaction.response.send_message(
+                    "Quick VIP uses must be at least 1.",
+                    ephemeral=True,
+                )
+                schedule_ephemeral_cleanup(interaction)
+                return
+            if hours <= 0:
+                await interaction.response.send_message(
+                    "Quick VIP allocation hours must be at least 1.",
+                    ephemeral=True,
+                )
+                schedule_ephemeral_cleanup(interaction)
+                return
+
+            await interaction.response.defer(ephemeral=True)
+            allocation = await self.quick_vip_allocation_store.upsert_allocation(
+                role_id=role.id,
+                uses=uses,
+                window_hours=hours,
+                actor_id=interaction.user.id,
+            )
+            await self.refresh_quick_vip_announcement_message()
+            grant_label = "use" if allocation.uses == 1 else "uses"
+            followup_message = await interaction.followup.send(
+                (
+                    f"Quick VIP allocation saved for {role.mention}: "
+                    f"{allocation.uses} {grant_label} per {allocation.window_hours} hours."
+                ),
+                ephemeral=True,
+                wait=True,
+            )
+            schedule_ephemeral_cleanup(interaction, message=followup_message)
+
+        @self.tree.command(
+            name="delete_quick_vip_allocation",
+            description="Delete Quick VIP usage for a Discord role.",
+        )
+        @app_commands.describe(role="Discord role to remove from Quick VIP allocations")
+        async def delete_quick_vip_allocation(interaction: discord.Interaction, role: discord.Role) -> None:
+            if not self._user_has_moderator_privileges(interaction.user):
+                await interaction.response.send_message(
+                    "You need moderator permissions to use this command.",
+                    ephemeral=True,
+                )
+                schedule_ephemeral_cleanup(interaction)
+                return
+
+            await interaction.response.defer(ephemeral=True)
+            deleted = await self.quick_vip_allocation_store.delete_allocation(role.id)
+            if not deleted:
+                followup_message = await interaction.followup.send(
+                    f"No Quick VIP allocation exists for {role.mention}.",
+                    ephemeral=True,
+                    wait=True,
+                )
+                schedule_ephemeral_cleanup(interaction, message=followup_message)
+                return
+
+            await self.refresh_quick_vip_announcement_message()
+            followup_message = await interaction.followup.send(
+                f"Quick VIP allocation deleted for {role.mention}.",
+                ephemeral=True,
+                wait=True,
+            )
+            schedule_ephemeral_cleanup(interaction, message=followup_message)
+
+        @self.tree.command(
+            name="quick_vip_allocations",
+            description="List configured Quick VIP role allocations.",
+        )
+        async def quick_vip_allocations(interaction: discord.Interaction) -> None:
+            if not self._user_has_moderator_privileges(interaction.user):
+                await interaction.response.send_message(
+                    "You need moderator permissions to use this command.",
+                    ephemeral=True,
+                )
+                schedule_ephemeral_cleanup(interaction)
+                return
+
+            allocations = await self.quick_vip_allocation_store.list_allocations()
+            await interaction.response.send_message(
+                self._format_quick_vip_allocations(allocations),
+                ephemeral=True,
+            )
+            schedule_ephemeral_cleanup(interaction)
 
         @self.tree.command(
             name="health",

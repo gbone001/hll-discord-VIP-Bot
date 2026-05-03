@@ -2,8 +2,9 @@ import importlib.util
 import json
 import os
 import pathlib
-import tempfile
+import shutil
 import unittest
+import uuid
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
@@ -24,12 +25,31 @@ VipHttpClient = frontline_pass.VipHttpClient
 VipHTTPError = frontline_pass.VipHTTPError
 VipService = frontline_pass.VipService
 RollingWindowLimiter = frontline_pass.RollingWindowLimiter
+QuickVipAllocationStore = frontline_pass.QuickVipAllocationStore
 FrontlinePassBot = frontline_pass.FrontlinePassBot
 QuickVipView = frontline_pass.QuickVipView
+SwitchMeView = frontline_pass.SwitchMeView
 PlayerVipStatus = frontline_pass.PlayerVipStatus
+TeamSwitchResult = frontline_pass.TeamSwitchResult
 QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS = frontline_pass.QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS
 LEGACY_QUICK_VIP_GIVER_ROLE_NAMES = frontline_pass.LEGACY_QUICK_VIP_GIVER_ROLE_NAMES
 LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW = frontline_pass.LEGACY_QUICK_VIP_GIVER_LIMIT_PER_WINDOW
+DEFAULT_QUICK_VIP_ROLE_IDS = frontline_pass.DEFAULT_QUICK_VIP_ROLE_IDS
+
+
+class WorkspaceTemporaryDirectory:
+    def __init__(self) -> None:
+        self.name = str(pathlib.Path(__file__).resolve().parent.parent / ".test-tmp" / uuid.uuid4().hex)
+
+    def __enter__(self) -> str:
+        pathlib.Path(self.name).mkdir(parents=True, exist_ok=False)
+        return self.name
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.cleanup()
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self.name, ignore_errors=True)
 
 
 class DummyResponse:
@@ -128,7 +148,8 @@ class DummyMember:
 
 class DummyGuild:
     def __init__(self, roles: list | None = None) -> None:
-        self._roles = {role.id: role for role in (roles or [])}
+        self.roles = roles or []
+        self._roles = {role.id: role for role in self.roles}
 
     def get_role(self, role_id: int):
         return self._roles.get(role_id)
@@ -337,6 +358,31 @@ class VipHttpClientTests(unittest.TestCase):
         self.assertEqual(session.calls[0]["method"], "GET")
         self.assertEqual(session.calls[0]["url"], "https://example/api/get_players")
 
+    def test_get_detailed_players_fetches_players(self) -> None:
+        session = DummySession(
+            DummyResponse(
+                200,
+                {
+                    "result": {
+                        "players": {
+                            "p1": {"player_id": "p1", "team": "axis"},
+                            "p2": {"player_id": "p2", "team": "allies"},
+                        }
+                    }
+                },
+            )
+        )
+        client = VipHttpClient(
+            HttpCredentials(base_url="https://example/api", bearer_token="abc123"),
+            session=session,
+        )
+
+        players = client.get_detailed_players()
+
+        self.assertEqual(len(players), 2)
+        self.assertEqual(session.calls[0]["method"], "GET")
+        self.assertEqual(session.calls[0]["url"], "https://example/api/get_detailed_players")
+
     def test_message_player_posts_payload(self) -> None:
         session = DummySession(DummyResponse(200, {"result": True}))
         client = VipHttpClient(
@@ -364,6 +410,47 @@ class VipHttpClientTests(unittest.TestCase):
                 "player_name": "PlayerOne",
             },
         )
+
+    def test_get_gamestate_fetches_result(self) -> None:
+        session = DummySession(
+            DummyResponse(
+                200,
+                {"result": {"num_axis_players": 48, "num_allied_players": 46}},
+            )
+        )
+        client = VipHttpClient(
+            HttpCredentials(base_url="https://example/api", bearer_token="abc123"),
+            session=session,
+        )
+
+        gamestate = client.get_gamestate()
+
+        self.assertEqual(gamestate["num_axis_players"], 48)
+        self.assertEqual(session.calls[0]["method"], "GET")
+        self.assertEqual(session.calls[0]["url"], "https://example/api/get_gamestate")
+
+    def test_switch_player_now_posts_payload(self) -> None:
+        session = DummySession(DummyResponse(200, {"result": True}))
+        client = VipHttpClient(
+            HttpCredentials(base_url="https://example/api", bearer_token="abc123"),
+            session=session,
+        )
+
+        result = client.switch_player_now("player-id")
+
+        self.assertTrue(result["result"])
+        self.assertEqual(session.calls[0]["url"], "https://example/api/switch_player_now")
+        self.assertEqual(session.calls[0]["json"], {"player_id": "player-id"})
+
+    def test_switch_player_now_raises_on_failure(self) -> None:
+        session = DummySession(DummyResponse(403, {"failed": True, "error": "forbidden"}))
+        client = VipHttpClient(
+            HttpCredentials(base_url="https://example/api", bearer_token="abc123"),
+            session=session,
+        )
+
+        with self.assertRaises(VipHTTPError):
+            client.switch_player_now("player-id")
 
     def test_set_broadcast_posts_message(self) -> None:
         session = DummySession(
@@ -511,6 +598,34 @@ class VipServiceTests(unittest.TestCase):
             expected_expiration.isoformat(),
         )
 
+    def test_grant_vip_extends_nested_player_vip_expiration(self) -> None:
+        service = VipService(self.config)
+        fake_http_client = mock.Mock()
+        fake_http_client.get_player_profile.return_value = {
+            "player": {
+                "player_vip": {
+                    "expiration": "2031-01-01T00:00:00+00:00",
+                }
+            }
+        }
+        fake_http_client.add_vip.return_value = {"result": "ok"}
+        service._http_client = fake_http_client  # type: ignore[attr-defined]
+        service._now_utc = mock.Mock(return_value=datetime(2030, 6, 1, tzinfo=timezone.utc))  # type: ignore[attr-defined]
+
+        result = service.grant_vip(
+            "steam123",
+            duration_hours=72,
+            local_timezone=pytz.UTC,
+            requester_display_name="GBONE",
+        )
+
+        expected_expiration = datetime.fromisoformat("2031-01-01T00:00:00+00:00") + timedelta(hours=72)
+        self.assertEqual(result.expiration_utc, expected_expiration)
+        self.assertEqual(
+            fake_http_client.add_vip.call_args[0][2],
+            expected_expiration.isoformat(),
+        )
+
     def test_get_player_vip_status_returns_expiration(self) -> None:
         service = VipService(self.config)
         fake_http_client = mock.Mock()
@@ -526,6 +641,23 @@ class VipServiceTests(unittest.TestCase):
         self.assertEqual(status.player_id, "steam123")
         self.assertEqual(status.expiration_utc, datetime.fromisoformat("2032-05-01T10:00:00+00:00"))
         fake_http_client.get_player_profile.assert_called_once_with("steam123", num_sessions=10)
+
+    def test_get_player_vip_status_reads_nested_vip_shape(self) -> None:
+        service = VipService(self.config)
+        fake_http_client = mock.Mock()
+        fake_http_client.get_player_profile.return_value = {
+            "profile": {
+                "current_vip": {
+                    "expiration": "2032-05-01T10:00:00+00:00",
+                }
+            }
+        }
+        service._http_client = fake_http_client  # type: ignore[attr-defined]
+
+        status = service.get_player_vip_status("steam123")
+
+        self.assertEqual(status.player_id, "steam123")
+        self.assertEqual(status.expiration_utc, datetime.fromisoformat("2032-05-01T10:00:00+00:00"))
 
     def test_get_player_vip_status_handles_missing_entries(self) -> None:
         service = VipService(self.config)
@@ -584,10 +716,54 @@ class VipServiceTests(unittest.TestCase):
         with self.assertRaises(VipHTTPError):
             service.message_team("spectators", "Hello", "Moderator")
 
+    def test_switch_player_to_opposite_team_axis_to_allies(self) -> None:
+        service = VipService(self.config)
+        fake_http_client = mock.Mock()
+        fake_http_client.get_detailed_players.return_value = [
+            {"player_id": "steam123", "team": "Axis"},
+        ]
+        fake_http_client.get_gamestate.return_value = {
+            "num_axis_players": 49,
+            "num_allied_players": 48,
+        }
+        fake_http_client.switch_player_now.return_value = {"result": True}
+        service._http_client = fake_http_client  # type: ignore[attr-defined]
+
+        result = service.switch_player_to_opposite_team("steam123", "GBONE")
+
+        self.assertTrue(result.switched)
+        self.assertEqual(result.current_team, "axis")
+        self.assertEqual(result.target_team, "allies")
+        fake_http_client.switch_player_now.assert_called_once_with("steam123")
+
+    def test_switch_player_to_opposite_team_rejects_missing_player(self) -> None:
+        service = VipService(self.config)
+        fake_http_client = mock.Mock()
+        fake_http_client.get_detailed_players.return_value = []
+        service._http_client = fake_http_client  # type: ignore[attr-defined]
+
+        with self.assertRaises(VipHTTPError):
+            service.switch_player_to_opposite_team("steam123", "GBONE")
+
+    def test_switch_player_to_opposite_team_rejects_full_team(self) -> None:
+        service = VipService(self.config)
+        fake_http_client = mock.Mock()
+        fake_http_client.get_detailed_players.return_value = [
+            {"player_id": "steam123", "team": "Allies"},
+        ]
+        fake_http_client.get_gamestate.return_value = {
+            "num_axis_players": 50,
+            "num_allied_players": 47,
+        }
+        service._http_client = fake_http_client  # type: ignore[attr-defined]
+
+        with self.assertRaises(VipHTTPError):
+            service.switch_player_to_opposite_team("steam123", "GBONE")
+
 
 class RollingWindowLimiterTests(unittest.IsolatedAsyncioTestCase):
     async def test_try_consume_blocks_after_limit(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with WorkspaceTemporaryDirectory() as tmpdir:
             storage_path = pathlib.Path(tmpdir) / "quick_limit.json"
             limiter = RollingWindowLimiter(
                 window=timedelta(hours=24),
@@ -607,7 +783,7 @@ class RollingWindowLimiterTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(blocked.next_available_at)
 
     async def test_try_consume_prunes_old_entries(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with WorkspaceTemporaryDirectory() as tmpdir:
             storage_path = pathlib.Path(tmpdir) / "quick_limit.json"
             old_time = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
             state = {
@@ -630,7 +806,7 @@ class RollingWindowLimiterTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.limit, 1)
 
     async def test_get_usage_reports_limit_without_consuming(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with WorkspaceTemporaryDirectory() as tmpdir:
             storage_path = pathlib.Path(tmpdir) / "quick_limit.json"
             limiter = RollingWindowLimiter(
                 window=timedelta(hours=24),
@@ -651,9 +827,132 @@ class RollingWindowLimiterTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(usage_after.next_available_at)
 
 
+class QuickVipAllocationStoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_upsert_persists_allocation_and_usage(self) -> None:
+        with WorkspaceTemporaryDirectory() as tmpdir:
+            storage_path = pathlib.Path(tmpdir) / "quick_vip_allocations.json"
+            store = QuickVipAllocationStore(storage_path=storage_path)
+
+            allocation = await store.upsert_allocation(
+                role_id=99,
+                uses=2,
+                window_hours=24,
+                actor_id=7,
+            )
+            first = await store.try_consume(role_id=99, user_id=42)
+            reloaded = QuickVipAllocationStore(storage_path=storage_path)
+            eligibility = await reloaded.get_eligibility(role_ids=(99,), user_id=42)
+
+            self.assertEqual(allocation.role_id, 99)
+            self.assertEqual(allocation.uses, 2)
+            self.assertTrue(first.allowed)
+            self.assertTrue(eligibility.allowed)
+            self.assertIsNotNone(eligibility.usage)
+            self.assertEqual(eligibility.usage.used, 1)
+            self.assertEqual(eligibility.usage.limit, 2)
+
+    async def test_get_eligibility_chooses_available_role_with_remaining_uses(self) -> None:
+        with WorkspaceTemporaryDirectory() as tmpdir:
+            store = QuickVipAllocationStore(storage_path=pathlib.Path(tmpdir) / "quick_vip_allocations.json")
+            await store.upsert_allocation(role_id=10, uses=1, window_hours=48, actor_id=None)
+            await store.upsert_allocation(role_id=20, uses=3, window_hours=24, actor_id=None)
+            await store.try_consume(role_id=10, user_id=42)
+
+            eligibility = await store.get_eligibility(role_ids=(10, 20), user_id=42)
+
+            self.assertTrue(eligibility.allowed)
+            self.assertIsNotNone(eligibility.allocation)
+            self.assertEqual(eligibility.allocation.role_id, 20)
+            self.assertIsNotNone(eligibility.usage)
+            self.assertTrue(eligibility.usage.allowed)
+
+    async def test_delete_allocation_removes_authorization(self) -> None:
+        with WorkspaceTemporaryDirectory() as tmpdir:
+            store = QuickVipAllocationStore(storage_path=pathlib.Path(tmpdir) / "quick_vip_allocations.json")
+            await store.upsert_allocation(role_id=99, uses=1, window_hours=48, actor_id=None)
+            deleted = await store.delete_allocation(99)
+            eligibility = await store.get_eligibility(role_ids=(99,), user_id=42)
+
+            self.assertTrue(deleted)
+            self.assertFalse(eligibility.allowed)
+
+
+class QuickVipAllocationMigrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bot_seeds_configured_quick_vip_roles_including_randoms(self) -> None:
+        with WorkspaceTemporaryDirectory() as tmpdir:
+            config = AppConfig(
+                discord_token="token",
+                vip_duration_hours=4,
+                channel_id=1,
+                timezone=pytz.UTC,
+                timezone_name="UTC",
+                state_directory=pathlib.Path(tmpdir),
+                http_credentials=HttpCredentials(base_url="https://example", bearer_token="abc123"),
+            )
+            bot = FrontlinePassBot(config, mock.Mock())
+            self.addAsyncCleanup(bot.close)
+
+            allocations = await bot.quick_vip_allocation_store.list_allocations()
+
+            allocation_by_role = {allocation.role_id: allocation for allocation in allocations}
+            self.assertIn(1322175167685988403, allocation_by_role)
+            self.assertIn(1440534025054720020, allocation_by_role)
+            self.assertEqual(allocation_by_role[1440534025054720020].uses, 1)
+            self.assertEqual(allocation_by_role[1440534025054720020].window_hours, 48)
+
+    async def test_bot_seeds_legacy_role_names_as_allocations_when_guild_roles_are_known(self) -> None:
+        with WorkspaceTemporaryDirectory() as tmpdir:
+            config = AppConfig(
+                discord_token="token",
+                vip_duration_hours=4,
+                channel_id=1,
+                timezone=pytz.UTC,
+                timezone_name="UTC",
+                state_directory=pathlib.Path(tmpdir),
+                http_credentials=HttpCredentials(base_url="https://example", bearer_token="abc123"),
+                quick_vip_role_ids=(),
+            )
+            bot = FrontlinePassBot(config, mock.Mock())
+            self.addAsyncCleanup(bot.close)
+            legacy_role = DummyRole(1234, "MSU-Quick-VIP-Giver")
+
+            with mock.patch.object(type(bot), "guilds", new_callable=mock.PropertyMock, return_value=[DummyGuild([legacy_role])]):
+                bot._seed_legacy_quick_vip_allocations_from_guilds()
+
+            eligibility = await bot.quick_vip_allocation_store.get_eligibility(role_ids=(1234,), user_id=42)
+            self.assertTrue(eligibility.allowed)
+            self.assertEqual(eligibility.limit, 5)
+            self.assertEqual(eligibility.window_hours, 24)
+
+    async def test_bot_does_not_reseed_deleted_default_allocation_after_state_exists(self) -> None:
+        with WorkspaceTemporaryDirectory() as tmpdir:
+            config = AppConfig(
+                discord_token="token",
+                vip_duration_hours=4,
+                channel_id=1,
+                timezone=pytz.UTC,
+                timezone_name="UTC",
+                state_directory=pathlib.Path(tmpdir),
+                http_credentials=HttpCredentials(base_url="https://example", bearer_token="abc123"),
+            )
+            first_bot = FrontlinePassBot(config, mock.Mock())
+            self.addAsyncCleanup(first_bot.close)
+            deleted = await first_bot.quick_vip_allocation_store.delete_allocation(1440534025054720020)
+            self.assertTrue(deleted)
+
+            second_bot = FrontlinePassBot(config, mock.Mock())
+            self.addAsyncCleanup(second_bot.close)
+            eligibility = await second_bot.quick_vip_allocation_store.get_eligibility(
+                role_ids=(1440534025054720020,),
+                user_id=42,
+            )
+
+            self.assertFalse(eligibility.allowed)
+
+
 class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = WorkspaceTemporaryDirectory()
         self.addAsyncCleanup(self._cleanup_tempdir)
         self.base_config = AppConfig(
             discord_token="token",
@@ -684,6 +983,7 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
             state_directory=self.base_config.state_directory,
             http_credentials=self.base_config.http_credentials,
             vip_assign_limit=self.base_config.vip_assign_limit,
+            moderator_role_id=self.base_config.moderator_role_id,
             vip_temp_role_id=vip_temp_role_id,
             quick_vip_role_ids=self.base_config.quick_vip_role_ids,
         )
@@ -692,11 +992,6 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
             config.timezone,
             default_limit=config.vip_assign_limit,
             storage_path=pathlib.Path(self.tempdir.name) / "vip_assign_usage.json",
-        )
-        bot.quick_vip_giver_limiter = RollingWindowLimiter(
-            window=timedelta(hours=QUICK_VIP_GIVER_LIMIT_WINDOW_HOURS),
-            default_limit=1,
-            storage_path=pathlib.Path(self.tempdir.name) / "quick_vip_role_usage.json",
         )
         await bot._register_commands()
         self.addAsyncCleanup(bot.close)
@@ -760,9 +1055,10 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"):
             await view.handle_modal_submission(interaction, "2805d5bbe14b6ec432f82e5cb859d012")
 
-        usage = await bot.quick_vip_giver_limiter.get_usage(quick_vip_user.id)
-        self.assertTrue(usage.allowed)
-        self.assertEqual(usage.used, 0)
+        eligibility = await bot.quick_vip_allocation_store.get_eligibility(role_ids=(99,), user_id=quick_vip_user.id)
+        self.assertIsNotNone(eligibility.usage)
+        self.assertTrue(eligibility.usage.allowed)
+        self.assertEqual(eligibility.usage.used, 0)
 
     async def test_quick_vip_rejects_user_without_nominated_role(self) -> None:
         bot = await self._build_bot()
@@ -811,6 +1107,12 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_legacy_quick_vip_role_keeps_five_per_24_hours(self) -> None:
         bot = await self._build_bot()
         legacy_role_name = next(iter(LEGACY_QUICK_VIP_GIVER_ROLE_NAMES))
+        await bot.quick_vip_allocation_store.upsert_allocation(
+            role_id=100,
+            uses=5,
+            window_hours=24,
+            actor_id=None,
+        )
         quick_vip_user = DummyMember(
             12,
             "LegacyQuickVIP",
@@ -849,14 +1151,15 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
             roles=[DummyRole(555, "Moderator")],
         )
 
-        eligibility = bot.get_quick_vip_eligibility(moderator_user)
+        eligibility = await bot.get_quick_vip_eligibility(moderator_user)
 
         self.assertTrue(eligibility.allowed)
         self.assertTrue(eligibility.unlimited)
-        self.assertIsNone(eligibility.limiter)
+        self.assertIsNone(eligibility.allocation)
+        self.assertIsNone(eligibility.usage)
         self.assertEqual(eligibility.policy_name, "moderator role")
 
-    async def test_moderator_role_quick_vip_does_not_consume_limiter_usage(self) -> None:
+    async def test_moderator_role_quick_vip_does_not_consume_allocation_usage(self) -> None:
         bot = await self._build_bot()
         moderator_user = DummyMember(
             14,
@@ -880,51 +1183,282 @@ class BotCommandRegressionTests(unittest.IsolatedAsyncioTestCase):
         ):
             await view.handle_modal_submission(interaction, "2805d5bbe14b6ec432f82e5cb859d012")
 
-        nominated_usage = await bot.quick_vip_giver_limiter.get_usage(moderator_user.id)
-        legacy_usage = await bot.legacy_quick_vip_giver_limiter.get_usage(moderator_user.id)
-        self.assertEqual(nominated_usage.used, 0)
-        self.assertEqual(legacy_usage.used, 0)
+        eligibility = await bot.quick_vip_allocation_store.get_eligibility(role_ids=(99,), user_id=moderator_user.id)
+        self.assertIsNotNone(eligibility.usage)
+        self.assertEqual(eligibility.usage.used, 0)
+
+    async def test_create_quick_vip_allocation_command_persists_role_policy(self) -> None:
+        bot = await self._build_bot()
+        moderator = DummyMember(17, "Moderator", roles=[DummyRole(555, "Moderator")])
+        interaction = DummyInteraction(user=moderator, guild=DummyGuild())
+        role = DummyRole(777, "Randoms")
+        command = bot.tree.get_command("create_quick_vip_allocation")
+        self.assertIsNotNone(command)
+
+        with (
+            mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"),
+            mock.patch.object(bot, "refresh_quick_vip_announcement_message", new=mock.AsyncMock()),
+        ):
+            await command.callback(interaction, role, 1, 48)  # type: ignore[union-attr]
+
+        eligibility = await bot.quick_vip_allocation_store.get_eligibility(role_ids=(777,), user_id=42)
+        self.assertTrue(eligibility.allowed)
+        self.assertEqual(eligibility.limit, 1)
+        self.assertEqual(eligibility.window_hours, 48)
+        self.assertEqual(len(interaction.followup.messages), 1)
+        self.assertIn("1 use per 48 hours", interaction.followup.messages[0][0])
+
+    async def test_delete_quick_vip_allocation_command_removes_role_policy(self) -> None:
+        bot = await self._build_bot()
+        await bot.quick_vip_allocation_store.upsert_allocation(
+            role_id=777,
+            uses=1,
+            window_hours=48,
+            actor_id=None,
+        )
+        moderator = DummyMember(18, "Moderator", roles=[DummyRole(555, "Moderator")])
+        interaction = DummyInteraction(user=moderator, guild=DummyGuild())
+        role = DummyRole(777, "Randoms")
+        command = bot.tree.get_command("delete_quick_vip_allocation")
+        self.assertIsNotNone(command)
+
+        with (
+            mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"),
+            mock.patch.object(bot, "refresh_quick_vip_announcement_message", new=mock.AsyncMock()),
+        ):
+            await command.callback(interaction, role)  # type: ignore[union-attr]
+
+        eligibility = await bot.quick_vip_allocation_store.get_eligibility(role_ids=(777,), user_id=42)
+        self.assertFalse(eligibility.allowed)
+        self.assertEqual(len(interaction.followup.messages), 1)
+        self.assertIn("deleted", interaction.followup.messages[0][0])
+
+    async def test_quick_vip_allocations_command_lists_role_policies(self) -> None:
+        bot = await self._build_bot()
+        await bot.quick_vip_allocation_store.upsert_allocation(
+            role_id=777,
+            uses=2,
+            window_hours=12,
+            actor_id=None,
+        )
+        moderator = DummyMember(19, "Moderator", roles=[DummyRole(555, "Moderator")])
+        interaction = DummyInteraction(user=moderator, guild=DummyGuild())
+        command = bot.tree.get_command("quick_vip_allocations")
+        self.assertIsNotNone(command)
+
+        with mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"):
+            await command.callback(interaction)  # type: ignore[union-attr]
+
+        self.assertEqual(len(interaction.response.messages), 1)
+        self.assertIn("<@&777>: 2 uses per 12 hours", interaction.response.messages[0][0])
+
+    async def test_switch_me_rejects_invalid_player_id(self) -> None:
+        bot = await self._build_bot()
+        interaction = DummyInteraction(user=DummyMember(15, "Switcher"), guild=DummyGuild())
+        vip_service = mock.Mock()
+        view = SwitchMeView(bot, bot.config, vip_service)
+
+        with mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"):
+            await view.handle_modal_submission(interaction, "short-id")
+
+        self.assertEqual(len(interaction.response.messages), 1)
+        self.assertIn("32-character string", interaction.response.messages[0][0])
+        self.assertFalse(vip_service.switch_player_to_opposite_team.called)
+
+    async def test_switch_me_returns_success_message(self) -> None:
+        bot = await self._build_bot()
+        interaction = DummyInteraction(user=DummyMember(16, "Switcher"), guild=DummyGuild())
+        vip_service = mock.Mock()
+        vip_service.switch_player_to_opposite_team.return_value = TeamSwitchResult(
+            player_id="2805d5bbe14b6ec432f82e5cb859d012",
+            current_team="axis",
+            target_team="allies",
+            switched=True,
+            detail="True",
+            status_lines=[
+                "Requested by Switcher",
+                "Current team: Axis",
+                "Target team: Allies",
+                "HTTP API: True",
+            ],
+        )
+        view = SwitchMeView(bot, bot.config, vip_service)
+
+        with (
+            mock.patch.object(frontline_pass, "schedule_ephemeral_cleanup"),
+            mock.patch.object(frontline_pass.asyncio, "to_thread", new=mock.AsyncMock(side_effect=vip_service.switch_player_to_opposite_team)),
+        ):
+            await view.handle_modal_submission(interaction, "2805d5bbe14b6ec432f82e5cb859d012")
+
+        self.assertEqual(len(interaction.followup.messages), 1)
+        self.assertIn("Team switch requested successfully.", interaction.followup.messages[0][0])
 
 
 class LoadConfigTests(unittest.TestCase):
+    def test_load_config_defaults_quick_vip_roles_to_built_in_ids(self) -> None:
+        original_file = frontline_pass.__file__
+        with WorkspaceTemporaryDirectory() as tmpdir:
+            temp_root = pathlib.Path(tmpdir)
+            fake_module_path = temp_root / "frontline-pass.py"
+            fake_module_path.write_text("# test module marker\n", encoding="utf-8")
+
+            required_env = {
+                "DISCORD_TOKEN": "token",
+                "CHANNEL_ID": "123",
+                "VIP_DURATION_HOURS": "72",
+                "LOCAL_TIMEZONE": "Australia/Sydney",
+                "CRCON_HTTP_BASE_URL": "https://example.com",
+                "CRCON_HTTP_BEARER_TOKEN": "bearer-token",
+            }
+            removed_env = {
+                "FRONTLINE_STATE_DIR": os.environ.get("FRONTLINE_STATE_DIR"),
+                "FRONTLINE_CONFIG_PATH": os.environ.get("FRONTLINE_CONFIG_PATH"),
+                "QUICK_VIP_ROLE_IDS": os.environ.get("QUICK_VIP_ROLE_IDS"),
+            }
+
+            try:
+                frontline_pass.__file__ = str(fake_module_path)
+                for key, value in required_env.items():
+                    os.environ[key] = value
+                for key in removed_env:
+                    os.environ.pop(key, None)
+
+                config = frontline_pass.load_config()
+
+                self.assertEqual(config.quick_vip_role_ids, DEFAULT_QUICK_VIP_ROLE_IDS)
+            finally:
+                frontline_pass.__file__ = original_file
+                for key in required_env:
+                    os.environ.pop(key, None)
+                for key, value in removed_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
     def test_load_config_uses_app_directory_when_no_state_dir_is_configured(self) -> None:
         original_file = frontline_pass.__file__
-        temp_root = pathlib.Path(tempfile.mkdtemp())
-        fake_module_path = temp_root / "frontline-pass.py"
-        fake_module_path.write_text("# test module marker\n", encoding="utf-8")
+        with WorkspaceTemporaryDirectory() as tmpdir:
+            temp_root = pathlib.Path(tmpdir)
+            fake_module_path = temp_root / "frontline-pass.py"
+            fake_module_path.write_text("# test module marker\n", encoding="utf-8")
 
-        required_env = {
-            "DISCORD_TOKEN": "token",
-            "CHANNEL_ID": "123",
-            "VIP_DURATION_HOURS": "72",
-            "LOCAL_TIMEZONE": "Australia/Sydney",
-            "CRCON_HTTP_BASE_URL": "https://example.com",
-            "CRCON_HTTP_BEARER_TOKEN": "bearer-token",
-        }
-        removed_env = {
-            "FRONTLINE_STATE_DIR": os.environ.get("FRONTLINE_STATE_DIR"),
-            "FRONTLINE_CONFIG_PATH": os.environ.get("FRONTLINE_CONFIG_PATH"),
-        }
+            required_env = {
+                "DISCORD_TOKEN": "token",
+                "CHANNEL_ID": "123",
+                "VIP_DURATION_HOURS": "72",
+                "LOCAL_TIMEZONE": "Australia/Sydney",
+                "CRCON_HTTP_BASE_URL": "https://example.com",
+                "CRCON_HTTP_BEARER_TOKEN": "bearer-token",
+            }
+            removed_env = {
+                "FRONTLINE_STATE_DIR": os.environ.get("FRONTLINE_STATE_DIR"),
+                "FRONTLINE_CONFIG_PATH": os.environ.get("FRONTLINE_CONFIG_PATH"),
+            }
 
-        try:
-            frontline_pass.__file__ = str(fake_module_path)
-            for key, value in required_env.items():
-                os.environ[key] = value
-            for key in removed_env:
-                os.environ.pop(key, None)
-
-            config = frontline_pass.load_config()
-
-            self.assertEqual(config.state_directory, temp_root)
-        finally:
-            frontline_pass.__file__ = original_file
-            for key in required_env:
-                os.environ.pop(key, None)
-            for key, value in removed_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
+            try:
+                frontline_pass.__file__ = str(fake_module_path)
+                for key, value in required_env.items():
                     os.environ[key] = value
+                for key in removed_env:
+                    os.environ.pop(key, None)
+
+                config = frontline_pass.load_config()
+
+                self.assertEqual(config.state_directory, temp_root)
+            finally:
+                frontline_pass.__file__ = original_file
+                for key in required_env:
+                    os.environ.pop(key, None)
+                for key, value in removed_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+    def test_load_config_reads_command_guild_ids_from_env(self) -> None:
+        original_file = frontline_pass.__file__
+        with WorkspaceTemporaryDirectory() as tmpdir:
+            temp_root = pathlib.Path(tmpdir)
+            fake_module_path = temp_root / "frontline-pass.py"
+            fake_module_path.write_text("# test module marker\n", encoding="utf-8")
+
+            required_env = {
+                "DISCORD_TOKEN": "token",
+                "CHANNEL_ID": "123",
+                "VIP_DURATION_HOURS": "72",
+                "LOCAL_TIMEZONE": "Australia/Sydney",
+                "CRCON_HTTP_BASE_URL": "https://example.com",
+                "CRCON_HTTP_BEARER_TOKEN": "bearer-token",
+                "COMMAND_GUILD_IDS": "111,222",
+            }
+            removed_env = {
+                "FRONTLINE_STATE_DIR": os.environ.get("FRONTLINE_STATE_DIR"),
+                "FRONTLINE_CONFIG_PATH": os.environ.get("FRONTLINE_CONFIG_PATH"),
+                "COMMAND_GUILD_ID": os.environ.get("COMMAND_GUILD_ID"),
+            }
+
+            try:
+                frontline_pass.__file__ = str(fake_module_path)
+                for key, value in required_env.items():
+                    os.environ[key] = value
+                for key in removed_env:
+                    os.environ.pop(key, None)
+
+                config = frontline_pass.load_config()
+
+                self.assertEqual(config.command_guild_ids, (111, 222))
+            finally:
+                frontline_pass.__file__ = original_file
+                for key in required_env:
+                    os.environ.pop(key, None)
+                for key, value in removed_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+    def test_load_config_falls_back_to_single_command_guild_id(self) -> None:
+        original_file = frontline_pass.__file__
+        with WorkspaceTemporaryDirectory() as tmpdir:
+            temp_root = pathlib.Path(tmpdir)
+            fake_module_path = temp_root / "frontline-pass.py"
+            fake_module_path.write_text("# test module marker\n", encoding="utf-8")
+
+            required_env = {
+                "DISCORD_TOKEN": "token",
+                "CHANNEL_ID": "123",
+                "VIP_DURATION_HOURS": "72",
+                "LOCAL_TIMEZONE": "Australia/Sydney",
+                "CRCON_HTTP_BASE_URL": "https://example.com",
+                "CRCON_HTTP_BEARER_TOKEN": "bearer-token",
+                "COMMAND_GUILD_ID": "333",
+            }
+            removed_env = {
+                "FRONTLINE_STATE_DIR": os.environ.get("FRONTLINE_STATE_DIR"),
+                "FRONTLINE_CONFIG_PATH": os.environ.get("FRONTLINE_CONFIG_PATH"),
+                "COMMAND_GUILD_IDS": os.environ.get("COMMAND_GUILD_IDS"),
+            }
+
+            try:
+                frontline_pass.__file__ = str(fake_module_path)
+                for key, value in required_env.items():
+                    os.environ[key] = value
+                for key in removed_env:
+                    os.environ.pop(key, None)
+
+                config = frontline_pass.load_config()
+
+                self.assertEqual(config.command_guild_ids, (333,))
+            finally:
+                frontline_pass.__file__ = original_file
+                for key in required_env:
+                    os.environ.pop(key, None)
+                for key, value in removed_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
 
 
 if __name__ == "__main__":
